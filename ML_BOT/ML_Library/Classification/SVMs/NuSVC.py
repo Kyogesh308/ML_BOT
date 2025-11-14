@@ -6,6 +6,7 @@ from joblib import dump, load
 import numpy as np
 import os
 from io import StringIO
+import sys
 def train_and_save_model(dataset_path, target_column, pkl_filename):
     # Check if model already exists
     trained_dir = "Trained_Models"
@@ -72,6 +73,6 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
     return predict
 
 
-# Example usage
-predict_func = train_and_save_model("diabetes.csv", "Outcome", "Trained_NuSVC.pkl")
-predict_func()
+if __name__ == "__main__":
+    predict_func = train_and_save_model(sys.argv[1], sys.argv[2], sys.argv[3])
+    predict_func()

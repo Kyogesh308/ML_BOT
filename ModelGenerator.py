@@ -72,12 +72,12 @@ def save_script(filename: str, content: str) -> None:
 import subprocess
 import sys
 
-def execute_script(filename: str) -> None:
+def execute_script(filename: str, filepath, target, pkl_file) -> None:
     """Executes a Python script using the current interpreter."""
     print(f"\nExecuting script: {filename}")
     try:
         result = subprocess.run(
-            [sys.executable, filename]
+            [sys.executable, filename, filepath, target, pkl_file]
         )
         print("--- Script Output (stdout) ---")
         print(result.stdout.strip())

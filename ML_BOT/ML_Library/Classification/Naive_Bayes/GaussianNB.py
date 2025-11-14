@@ -5,11 +5,14 @@ from joblib import dump, load
 import numpy as np
 import os
 from io import StringIO
+import sys
 def train_and_save_model(dataset_path, target_column, pkl_filename):
     # Check if model already exists
-    if os.path.exists(pkl_filename):
+    trained_dir = "Trained_Models"
+    full_path = os.path.join(trained_dir, pkl_filename)
+    if os.path.exists(full_path):
         print(f"Model already trained. Loading '{pkl_filename}'...")
-        model, columns = load(pkl_filename)
+        model, columns = load(full_path)
         print("Model loaded successfully.")
     else:
         # Load and prepare dataset
@@ -47,15 +50,15 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
         model.fit(X_train, y_train)
 
         # Evaluate and save
-        print(f"Training completion: {model.score(X_test, y_test):.3f}")
+        print(f"Training score: {model.score(X_test, y_test):.3f}")
 
         # Save model
-        dump((model, list(X.columns)), pkl_filename)
+        dump((model, list(X.columns)), full_path)
         print(f"Model saved as '{pkl_filename}'")
 
     # Define the predict function (uses loaded or trained model)
     def predict():
-        model, columns = load(pkl_filename)
+        model, columns = load(full_path)
         X_new = []
         for col in columns:
             val = float(input(f"Enter value for column {col}: "))
@@ -67,6 +70,6 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
     return predict
 
 
-# Example usage
-predict_func = train_and_save_model("diabetes.csv", "Outcome", "Trained_GaussianNB.pkl")
-predict_func()
+if __name__ == "__main__":
+    predict_func = train_and_save_model(sys.argv[1], sys.argv[2], sys.argv[3])
+    predict_func()

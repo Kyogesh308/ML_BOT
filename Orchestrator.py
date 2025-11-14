@@ -73,9 +73,10 @@ def get_target_and_context(df):
     print(f"Context: {context if context else 'No context provided.'} \n")
 
     return target_column, context
-file_name = extract_filename(r"diabetes.csv")
+filepath = "ML_BOT\Sample_Datasets\diabetes.csv"
+file_name = extract_filename(r"ML_BOT\Sample_Datasets\diabetes.csv")
 #loading the file into the dataframe
-df = load_file(r"diabetes.csv")
+df = load_file(r"ML_BOT\Sample_Datasets\diabetes.csv")
 
 target_column, context = get_target_and_context(df)
 
@@ -147,6 +148,6 @@ Output only the complete Python code, enclosed in:
 raw_text = generate_script_content(model, prompt_template)
 code = extract_code_block(raw_text)
 save_script(filename, code)
-execute_script(filename)
+execute_script(filename, filepath, target_column, f"Trained_{model}.pkl")
 
 

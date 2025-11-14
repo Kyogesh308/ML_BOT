@@ -6,10 +6,13 @@ from joblib import dump, load
 import numpy as np
 import os
 from io import StringIO
+import sys
 def train_and_save_model(dataset_path, target_column, pkl_filename):
-    if os.path.exists(pkl_filename):
+    trained_dir = "Trained_Models"
+    full_path = os.path.join(trained_dir, pkl_filename)
+    if os.path.exists(full_path):
         print(f"Model already trained. Loading '{pkl_filename}'...")
-        model, scaler, columns = load(pkl_filename)
+        model, scaler, columns = load(full_path)
         print("Model loaded successfully.")
     else:
         ext = os.path.splitext(dataset_path)[1].lower()
@@ -45,13 +48,13 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
         model = LogisticRegression()
         model.fit(X_train, y_train)
 
-        print(f"Training completion: {model.score(X_test, y_test):.3f}")
+        print(f"Training score: {model.score(X_test, y_test):.3f}")
 
-        dump((model, scaler, list(X.columns)), pkl_filename)
+        dump((model, scaler, list(X.columns)), full_path)
         print(f"Model saved as '{pkl_filename}'")
 
     def predict():
-        model, scaler, columns = load(pkl_filename)
+        model, scaler, columns = load(full_path)
         X_new = []
         for col in columns:
             val = float(input(f"Enter value for column {col}: "))
@@ -62,5 +65,6 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
 
     return predict
 
-predict_func = train_and_save_model("diabetes.csv", "Outcome", "Trained_Logistic_Regression.pkl")
-predict_func()
+if __name__ == "__main__":
+    predict_func = train_and_save_model(sys.argv[1], sys.argv[2], sys.argv[3])
+    predict_func()

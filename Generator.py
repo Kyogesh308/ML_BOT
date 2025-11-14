@@ -71,7 +71,7 @@ def save_script(filename: str, content: str) -> None:
     Creates the directory if it doesn't exist.
     """
     # Define the base save directory
-    save_dir = os.path.join("ML_BOT", "ML_Library", "Classification", "Neural_Networks")
+    save_dir = os.path.join("ML_BOT", "ML_Library", "Regression", "Linear_Models")
     
     # Make sure the full directory exists
     os.makedirs(save_dir, exist_ok=True)
@@ -88,22 +88,39 @@ def save_script(filename: str, content: str) -> None:
     print(f"✅ File saved successfully at: {file_path}")
 
 if __name__ == "__main__":
-    classification_models = [
-     # Neural Networks
-    "MLPClassifier",]
+    regression_models = [
+    # Linear Models
+    "LinearRegression",
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "Lars",
+    "LassoLars",
+    "OrthogonalMatchingPursuit",
+    "BayesianRidge",
+    "ARDRegression",
+    "HuberRegressor",
+    "TheilSenRegressor",
+    "RANSACRegressor",
+    "PoissonRegressor",
+    "GammaRegressor",
+    "TweedieRegressor",
+    "QuantileRegressor",
+    "PassiveAggressiveRegressor",
+    "SGDRegressor",]
     
-    print("Generating and saving Neural Network Models. ")
+    print("Generating and saving Linear_Models. ")
     prompt_template = """
 You are an expert AutoML Python code generator.
 
-Your goal: Generate a **complete, runnable Python script** for a classification model using scikit-learn.
+Your goal: Generate a **complete, runnable Python script** for a regression model using scikit-learn.
 
 ---
 
 ### INPUT:
-You will receive one model name (e.g. "LogisticRegression", "RandomForestClassifier", "SVC", "KNeighborsClassifier", etc.).
+You will receive one model name (e.g. "LinearRegression", "RandomForestRegressor", etc.).
 
-All models belong to the **classification family** from scikit-learn, so import them correctly from their submodules such as:
+All models belong to the **regression family** from scikit-learn, so import them correctly from their submodules such as:
 - sklearn.linear_model
 - sklearn.ensemble
 - sklearn.svm
@@ -129,10 +146,13 @@ from joblib import dump, load
 import numpy as np
 import os
 from io import StringIO
+import sys
 def train_and_save_model(dataset_path, target_column, pkl_filename):
-    if os.path.exists(pkl_filename):
+    trained_dir = "Trained_Models"
+    full_path = os.path.join(trained_dir, pkl_filename)
+    if os.path.exists(full_path):
         print(f"Model already trained. Loading '{pkl_filename}'...")
-        model, scaler, columns = load(pkl_filename)
+        model, scaler, columns = load(full_path)
         print("Model loaded successfully.")
     else:
         ext = os.path.splitext(dataset_path)[1].lower()
@@ -168,13 +188,13 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
         model = LogisticRegression()
         model.fit(X_train, y_train)
 
-        print(f"Training completion: {model.score(X_test, y_test):.3f}")
+        print(f"Training score: {model.score(X_test, y_test):.3f}")
 
-        dump((model, scaler, list(X.columns)), pkl_filename)
+        dump((model, scaler, list(X.columns)), full_path)
         print(f"Model saved as '{pkl_filename}'")
 
     def predict():
-        model, scaler, columns = load(pkl_filename)
+        model, scaler, columns = load(full_path)
         X_new = []
         for col in columns:
             val = float(input(f"Enter value for column {col}: "))
@@ -185,12 +205,12 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
 
     return predict
 
-predict_func = train_and_save_model("diabetes.csv", "Outcome", "Trained_Logistic_Regression.pkl")
-predict_func()
-
+if __name__ == "__main__":
+    predict_func = train_and_save_model(sys.argv[1], sys.argv[2], sys.argv[3])
+    predict_func()
 """
 
-    for i in classification_models:
+    for i in regression_models:
         raw = generate_script_content(i, prompt_template)
         content = extract_code_block(raw)
         filename = f"{i.replace(' ', '_')}.py"
