@@ -71,7 +71,7 @@ def save_script(filename: str, content: str) -> None:
     Creates the directory if it doesn't exist.
     """
     # Define the base save directory
-    save_dir = os.path.join("ML_BOT", "ML_Library", "Regression", "Linear_Models")
+    save_dir = os.path.join("ML_BOT", "ML_Library", "Clustering")
     
     # Make sure the full directory exists
     os.makedirs(save_dir, exist_ok=True)
@@ -88,28 +88,19 @@ def save_script(filename: str, content: str) -> None:
     print(f"✅ File saved successfully at: {file_path}")
 
 if __name__ == "__main__":
-    regression_models = [
-    # Linear Models
-    "LinearRegression",
-    "Ridge",
-    "Lasso",
-    "ElasticNet",
-    "Lars",
-    "LassoLars",
-    "OrthogonalMatchingPursuit",
-    "BayesianRidge",
-    "ARDRegression",
-    "HuberRegressor",
-    "TheilSenRegressor",
-    "RANSACRegressor",
-    "PoissonRegressor",
-    "GammaRegressor",
-    "TweedieRegressor",
-    "QuantileRegressor",
-    "PassiveAggressiveRegressor",
-    "SGDRegressor",]
-    
-    print("Generating and saving Linear_Models. ")
+    clustering_models = [
+    "KMeans",
+    "MiniBatchKMeans",
+    "AgglomerativeClustering",
+    "FeatureAgglomeration",
+    "DBSCAN",
+    "OPTICS",
+    "Birch",
+    "GaussianMixture",
+    "BayesianGaussianMixture",
+    "SpectralClustering",
+    ]
+    print("Generating and saving clustering. ")
     prompt_template = """
 You are an expert AutoML Python code generator.
 
@@ -139,60 +130,75 @@ Generate a fully functional Python script that exactly follows the structure and
 ### REFERENCE TEMPLATE (REPRODUCE THIS EXACT STRUCTURE)
 ```python
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from joblib import dump, load
 import numpy as np
 import os
-from io import StringIO
 import sys
+from io import StringIO
+from joblib import dump, load
+from sklearn.preprocessing import StandardScaler
+from sklearn.semi_supervised import LabelPropagation
+from sklearn.metrics import accuracy_score
+
 def train_and_save_model(dataset_path, target_column, pkl_filename):
     trained_dir = "Trained_Models"
+    os.makedirs(trained_dir, exist_ok=True)
+
     full_path = os.path.join(trained_dir, pkl_filename)
+
+    # Load existing model
     if os.path.exists(full_path):
         print(f"Model already trained. Loading '{pkl_filename}'...")
         model, scaler, columns = load(full_path)
         print("Model loaded successfully.")
     else:
+        # Load dataset
         ext = os.path.splitext(dataset_path)[1].lower()
         if ext == '.csv':
-            data = pd.read_csv(dataset_path)    
+            data = pd.read_csv(dataset_path)
         elif ext in ['.xls', '.xlsx']:
             data = pd.read_excel(dataset_path)
         elif ext == '.json':
-            data = pd.read_json(dataset_path)    
+            data = pd.read_json(dataset_path)
         elif ext == '.parquet':
             data = pd.read_parquet(dataset_path)
-        elif ext in ['.txt', '.log', '.md', '.conf', '.ini', '.text']:
+        else:
             try:
-                # Try reading as tabular data first
                 data = pd.read_csv(dataset_path, sep=None, engine='python')
-            except Exception:
-                # Fallback: read as raw text
+            except:
                 with open(dataset_path, 'r', encoding='utf-8') as f:
                     content = f.read()
                 data = pd.read_csv(StringIO(content))
-        
-        y = data[target_column]
-        X = data.drop(target_column, axis=1)
 
+        # Separate label column (may contain NaN for unlabeled data)
+        y = data[target_column].fillna(-1)
+
+        # Features
+        X = data.drop(target_column, axis=1)
         X.fillna(X.mean(), inplace=True)
+
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_scaled, y, test_size=0.2, random_state=42
-        )
+        # Train semi-supervised model
+        model = LabelPropagation(kernel='rbf', gamma=0.1)
+        model.fit(X_scaled, y)
 
-        model = LogisticRegression()
-        model.fit(X_train, y_train)
+        # Predict every sample (transduction)
+        y_pred = model.transduction_
 
-        print(f"Training score: {model.score(X_test, y_test):.3f}")
+        # Evaluate only on known labels
+        known_mask = y != -1
+        if known_mask.any():
+            acc = accuracy_score(y[known_mask], y_pred[known_mask])
+            print(f"Training completion: Accuracy on known labels = {acc:.3f}")
+        else:
+            print("Training completed with no known labels (fully unsupervised mode).")
 
+        # Save the model
         dump((model, scaler, list(X.columns)), full_path)
         print(f"Model saved as '{pkl_filename}'")
 
+    # Prediction function
     def predict():
         model, scaler, columns = load(full_path)
         X_new = []
@@ -208,9 +214,10 @@ def train_and_save_model(dataset_path, target_column, pkl_filename):
 if __name__ == "__main__":
     predict_func = train_and_save_model(sys.argv[1], sys.argv[2], sys.argv[3])
     predict_func()
+
 """
 
-    for i in regression_models:
+    for i in clustering_models:
         raw = generate_script_content(i, prompt_template)
         content = extract_code_block(raw)
         filename = f"{i.replace(' ', '_')}.py"

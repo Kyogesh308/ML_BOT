@@ -109,3 +109,70 @@ classification_models = [
     "StackingClassifier",
     "VotingClassifier"
 ]
+
+regression_models = [
+    # Linear Models
+    "LinearRegression",
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "Lars",
+    "LassoLars",
+    "OrthogonalMatchingPursuit",
+    "BayesianRidge",
+    "ARDRegression",
+    "HuberRegressor",
+    "TheilSenRegressor",
+    "RANSACRegressor",
+    "PoissonRegressor",
+    "GammaRegressor",
+    "TweedieRegressor",
+    "QuantileRegressor",
+    "PassiveAggressiveRegressor",
+    "SGDRegressor",
+
+    # Neighbors
+    "KNeighborsRegressor",
+    "RadiusNeighborsRegressor",
+
+    # Support Vector Machines
+    "SVR",
+    "NuSVR",
+    "LinearSVR",
+
+    # Trees & Ensembles
+    "DecisionTreeRegressor",
+    "RandomForestRegressor",
+    "ExtraTreesRegressor",
+    "BaggingRegressor",
+    "AdaBoostRegressor",
+    "GradientBoostingRegressor",
+    "HistGradientBoostingRegressor",
+
+    # Gaussian Processes
+    "GaussianProcessRegressor",
+
+    # Neural Networks
+    "MLPRegressor",
+
+    # Isotonic Regression
+    "IsotonicRegression",
+
+    # Meta / Ensemble Wrappers
+    "StackingRegressor",
+    "VotingRegressor",
+    "TransformedTargetRegressor"
+]
+
+clustering_models = [
+    "KMeans",
+    "MiniBatchKMeans",
+    "AgglomerativeClustering",
+    "FeatureAgglomeration",
+    "DBSCAN",
+    "OPTICS",
+    "Birch",
+    "GaussianMixture",
+    "BayesianGaussianMixture",
+    "SpectralClustering"
+]
