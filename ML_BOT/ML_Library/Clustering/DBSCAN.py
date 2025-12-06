@@ -11,39 +11,48 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import silhouette_score
 import warnings
 
-# Define standard DBSCAN parameters
-DEFAULT_EPS = 0.5    # The maximum distance between two samples for one to be considered as in the neighborhood of the other
-DEFAULT_MIN_SAMPLES = 5 # The number of samples (or total weight) in a neighborhood for a point to be considered as a core point
+# --- Constants ---
+DEFAULT_EPS = 0.5    # The maximum distance
+DEFAULT_MIN_SAMPLES = 5 
+DEFAULT_K_NEIGHBORS = 5 # K value for the proxy classifier
 
 def train_and_save_dbscan(dataset_path: str, pkl_filename: str):
     """
     Trains a DBSCAN model, uses a KNeighborsClassifier as a proxy for prediction, 
     saves necessary components, and returns a predict function.
-    
-    The target_column argument is removed as clustering is unsupervised.
+    NOTE: DBSCAN is density-based and does not require an input for n_clusters (K).
     """
     
+    # Suppress warnings related to convergence and initialization
     warnings.filterwarnings("ignore", category=UserWarning)
 
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
-    model_path = os.path.join(trained_dir, pkl_filename)
+    full_path = os.path.join(trained_dir, pkl_filename)
 
     # Variables to store components for saving/loading
-    model = None          # This will be the KNeighborsClassifier proxy
+    model = None          # Stores the KNeighborsClassifier proxy (or DBSCAN if no clusters found)
     scaler = None
     feature_columns = None
     encoders = {}
+    is_trained = False
+    
+    # DBSCAN parameters are fixed/defaulted, so they don't need to be loaded as a separate component.
 
     ## --- CASE 1: Load existing model ---
-    if os.path.exists(model_path):
+    if os.path.exists(full_path):
         print(f"**[INFO] Loading existing DBSCAN predictive model '{pkl_filename}'...**")
-        # Ensure we load all four saved components
-        model, scaler, feature_columns, encoders = load(model_path)
-        print("[INFO] Predictive model loaded successfully.")
+        try:
+            # Load the four required components
+            model, scaler, feature_columns, encoders = load(full_path)
+            print("[INFO] Predictive model loaded successfully.")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
 
     ## --- CASE 2: Train and Save a new model ---
-    else:
+    if not is_trained:
         ## --- LOAD DATA ---
         ext = os.path.splitext(dataset_path)[1].lower()
         try:
@@ -56,10 +65,13 @@ def train_and_save_dbscan(dataset_path: str, pkl_filename: str):
             elif ext == '.parquet':
                 data = pd.read_parquet(dataset_path)
             else:
-                # Fallback attempt for CSV-like files
-                data = pd.read_csv(dataset_path, sep=None, engine='python')
+                try:
+                    data = pd.read_csv(dataset_path, sep=None, engine='python')
+                except:
+                    with open(dataset_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    data = pd.read_csv(StringIO(content))
         except Exception as e:
-            # Added more robust error handling for data loading
             print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
             sys.exit(1)
 
@@ -78,131 +90,185 @@ def train_and_save_dbscan(dataset_path: str, pkl_filename: str):
         # 2. Fill NA (Imputation)
         X.fillna(X.mean(numeric_only=True), inplace=True)
 
-        # 3. SCALING
+        # 3. SCALING (CRITICAL for distance-based clustering)
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # Keep track of feature names
         feature_columns = list(X.columns)
 
         ## --- TRAIN DBSCAN MODEL ---
         print(f"\n**[INFO] Training DBSCAN Clustering with eps={DEFAULT_EPS} and min_samples={DEFAULT_MIN_SAMPLES}...**")
         
-        # Initialize and fit the DBSCAN model
         dbscan_model = DBSCAN(
             eps=DEFAULT_EPS, 
-            min_samples=DEFAULT_MIN_SAMPLES
+            min_samples=DEFAULT_MIN_SAMPLES,
+            n_jobs=-1
         )
 
-        # Fit the model and retrieve the cluster labels
         dbscan_model.fit(X_scaled)
         labels = dbscan_model.labels_
 
-        # DBSCAN assigns -1 to noise/outliers. We only consider the actual clusters (label >= 0).
         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        print(f"[INFO] Estimated number of clusters: {n_clusters}")
+        print(f"[INFO] Estimated number of clusters found: {n_clusters}")
 
         ## --- CREATE PREDICTION PROXY (MANDATORY for DBSCAN inference) ---
-        # DBSCAN has no .predict() method. We use KNeighborsClassifier trained 
-        # on the scaled data and the resulting DBSCAN labels.
-        # Note: KNN can assign a new point to a noise cluster (-1), which is correct behavior.
         if n_clusters > 0:
-            print("[INFO] Creating KNeighborsClassifier proxy for prediction...")
-            model = KNeighborsClassifier(n_neighbors=5)
-            model.fit(X_scaled, labels)
+            # We train the KNN proxy only on points that are NOT noise (-1)
+            X_clustered = X_scaled[labels != -1]
+            labels_clustered = labels[labels != -1]
+            
+            if len(labels_clustered) > 0:
+                 print(f"[INFO] Creating KNeighborsClassifier proxy (K={DEFAULT_K_NEIGHBORS}) using {len(X_clustered)} clustered points...")
+                 model = KNeighborsClassifier(n_neighbors=DEFAULT_K_NEIGHBORS, n_jobs=-1)
+                 model.fit(X_clustered, labels_clustered)
+            else:
+                 print("[WARNING] DBSCAN found 0 clusters. Falling back to predicting noise (-1).")
+                 # Setting model to DBSCAN instance itself to signify that only noise will be predicted
+                 model = dbscan_model 
         else:
-            print("[WARNING] DBSCAN found 0 clusters (all data is noise). Cannot create a meaningful prediction proxy.")
-            # Still save components, but model will predict -1 or the single noise cluster
+             print("[WARNING] DBSCAN found 0 clusters (all data is noise). Setting model to DBSCAN instance.")
+             model = dbscan_model
 
         ## --- EVALUATION ---
-        # We must filter out noise points (-1) for a valid silhouette score.
         mask = (labels != -1)
         if np.sum(mask) > 1 and n_clusters > 1:
             score = silhouette_score(X_scaled[mask], labels[mask])
             print(f"\n[INFO] Silhouette Score (excluding noise): **{score:.4f}**")
         else:
-             print("[INFO] Silhouette Score not calculated (too few points or clusters).")
+            print("[INFO] Silhouette Score not calculated (too few non-noise points or clusters).")
 
         ## --- SAVE MODEL COMPONENTS ---
-        # Save the predictive model (KNeighbors), scaler, feature names, and encoders
-        dump((model, scaler, feature_columns, encoders), model_path)
-        print(f"\n[INFO] Predictive model (KNeighborsClassifier) saved as '{pkl_filename}'")
+        # Save the predictive model (KNeighbors/DBSCAN instance), scaler, feature names, and encoders
+        dump((model, scaler, feature_columns, encoders), full_path)
+        print(f"\n[INFO] Predictive model saved as '{pkl_filename}'")
+        is_trained = True
     
     
-    ## --- PREDICT FUNCTION (for new data inference) ---
-    def predict():
-        """
-        Prompts the user for feature values, preprocesses the input, 
-        and prints the cluster assignment.
-        """
-        if not model:
-            print("[ERROR] Prediction proxy model not loaded/trained. Cannot predict.", file=sys.stderr)
-            return
+    ## --- PREDICT FUNCTION (Unlimited Loop for new data inference) ---
+    def predict_loop():
+        nonlocal model, scaler, feature_columns, encoders
+        
+        if model is None:
+            try:
+                # Load the four required components
+                model, scaler, feature_columns, encoders = load(full_path)
+            except Exception as e:
+                print(f"[FATAL ERROR] Failed to load model for prediction: {e}", file=sys.stderr)
+                return
 
-        print("\n" + "="*50)
-        print("ENTER FEATURE VALUES FOR CLUSTER PREDICTION (DBSCAN)")
-        print("="*50)
-        user_input_dict = {}
+        print("\n" + "="*70)
+        print(f"**Starting UNLIMITED Cluster Prediction Mode for '{pkl_filename}'**")
+        print("DBSCAN assigns Noise points to -1.")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
 
-        for col in feature_columns:
-            while True:
-                try:
-                    value = input(f"Enter value for **{col}**: ")
-                    
-                    # Handle categorical columns
-                    if col in encoders:
-                        le = encoders[col]
-                        try:
-                            encoded_value = le.transform([str(value).strip()])[0]
-                            user_input_dict[col] = encoded_value
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        value = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(value).strip()
+
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
                             break
-                        except ValueError:
-                            print(f"[ERROR] Value '{value}' for column '{col}' is not a known category. Please re-enter.")
-                            continue
-                    
-                    # Handle numerical columns
-                    else:
-                        user_input_dict[col] = float(value)
-                        break
-                except ValueError:
-                    print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
-                    continue
-        
-        # Convert user input to a DataFrame
-        user_df = pd.DataFrame([user_input_dict], columns=feature_columns)
+                            
+                        # Handle categorical columns using the saved encoders
+                        if col in encoders:
+                            le = encoders[col]
+                            try:
+                                encoded_value = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_value)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        
+                        # Handle numerical columns
+                        else:
+                            user_vals.append(float(value))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
+                
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Prediction mode terminated by user.**")
+                break
 
-        # Scale user input
-        user_scaled = scaler.transform(user_df.to_numpy())
+            # Convert user input to a DataFrame
+            user_df = pd.DataFrame([user_vals], columns=feature_columns)
 
-        # Predict cluster using the KNeighborsClassifier proxy model
-        cluster = model.predict(user_scaled)[0]
-        
-        cluster_result = f"Cluster: {cluster}"
-        if cluster == -1:
-            cluster_result = "Noise/Outlier (-1)"
+            # Scale user input (Pass DataFrame directly to scaler to resolve UserWarning)
+            user_scaled = scaler.transform(user_df)
 
-        print("\n" + "="*50)
-        print(f"**[RESULT] Assigned {cluster_result}**")
-        print("="*50)
+            # Predict cluster using the KNeighborsClassifier proxy model
+            # Note: If model is the raw DBSCAN object (due to 0 clusters), it should predict -1.
+            if isinstance(model, DBSCAN):
+                 cluster = -1 # Predict -1 if no proxy was trained
+            else:
+                 cluster = model.predict(user_scaled)[0]
 
-    return predict
+            cluster_result = f"Cluster: {int(cluster)}"
+            if cluster == -1:
+                cluster_result = "Noise/Outlier (-1)"
+
+            print("\n" + "="*30)
+            print(f"**[RESULT] Assigned {cluster_result}**")
+            print("="*30)
+
+    return predict_loop
 
 
 if __name__ == "__main__":
-    # Check for correct number of arguments (script_name, dataset_path, pkl_filename)
-    if len(sys.argv) != 3:
-        print("Usage: python script_name.py <dataset_path> <pkl_filename>")
-        print("Note: The target_column argument is removed for clustering problems.")
+    # Updated CLI checks to match the deployment standard structure
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage (Train/Predict): python script_name.py <dataset_path> <pkl_filename>")
+        print("Usage (Predict Only): python script_name.py <pkl_filename> predict_only")
         sys.exit(1)
         
-    dataset_path = sys.argv[1]
-    pkl_filename = sys.argv[2]
+    if len(sys.argv) == 3:
+        if sys.argv[2].lower() == 'predict_only':
+            # Transform Only Mode
+            pkl_filename = sys.argv[1]
+            try:
+                # Use dummy path/None value
+                predict_func = train_and_save_dbscan(None, pkl_filename) 
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Standard Training and Prediction
+            dataset_path = sys.argv[1]
+            pkl_filename = sys.argv[2]
+            try:
+                predict_func = train_and_save_dbscan(dataset_path, pkl_filename)
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
     
-    try:
-        # train_and_save_dbscan returns the prediction function
-        predict_func = train_and_save_dbscan(dataset_path, pkl_filename)
-        # Call the prediction function
-        predict_func()
-    except Exception as e:
-        print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+    elif len(sys.argv) == 2:
+        # Prediction Only Mode shortcut (python script_name.py pkl_filename)
+        pkl_filename = sys.argv[1]
+        try:
+            predict_func = train_and_save_dbscan(None, pkl_filename)
+            predict_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
         sys.exit(1)

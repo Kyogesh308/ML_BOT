@@ -4,46 +4,90 @@ import os
 import sys
 from io import StringIO
 from joblib import dump, load
-
-# --- Correct Clustering Imports ---
-from sklearn.mixture import GaussianMixture # The proper GMM clustering model
+from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import silhouette_score
 import warnings
 
 # --- Constants ---
-DEFAULT_N_COMPONENTS = 5 # Standard number of components (clusters)
+DEFAULT_K_RANGE = range(3, 11) 
+DEFAULT_COVARIANCE_TYPE = 'full'
+DEFAULT_MAX_ITER = 500
+# FIX: Use a fixed integer value for n_init, as GMM does not accept 'auto'.
+DEFAULT_N_INIT = 10 
+
+def find_optimal_k_gmm(X_scaled, k_range):
+    """Calculates Silhouette Score for Gaussian Mixture Model across a range of K and returns the optimal K."""
+    best_score = -1
+    optimal_k = k_range.start
+    
+    print(f"[INFO] Searching for optimal K using Silhouette Score across {list(k_range)} (GMM)...")
+    
+    for k in k_range:
+        try:
+            # GMM initialization for testing K
+            model = GaussianMixture(
+                n_components=k, 
+                covariance_type=DEFAULT_COVARIANCE_TYPE,
+                random_state=42,
+                max_iter=DEFAULT_MAX_ITER,
+                n_init=DEFAULT_N_INIT # FIX APPLIED
+            )
+            
+            labels = model.fit_predict(X_scaled)
+            
+            # Skip if only 1 cluster is found
+            if len(np.unique(labels)) > 1:
+                score = silhouette_score(X_scaled, labels)
+                if score > best_score:
+                    best_score = score
+                    optimal_k = k
+            
+        except Exception as e:
+            # Catch exceptions during fitting (e.g., singular matrix due to bad k)
+            # print(f"[WARNING] Skipping K={k} due to error: {e}")
+            continue
+            
+    print(f"[INFO] Optimal K found: {optimal_k} (Silhouette Score: {best_score:.4f})")
+    return optimal_k
+
 
 def train_and_save_model(dataset_path: str, pkl_filename: str):
     """
-    Trains a Gaussian Mixture Model (GMM) for clustering, saves necessary components, 
-    and returns a predict function.
-    
-    The target_column argument is removed as GMM is unsupervised clustering.
+    Trains a Gaussian Mixture Model (GMM) using the optimal K determined by Silhouette Score, 
+    and saves the necessary components for prediction.
     """
     
+    # Ignore common convergence warnings
     warnings.filterwarnings("ignore", category=UserWarning)
 
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
-    model_path = os.path.join(trained_dir, pkl_filename)
+    full_path = os.path.join(trained_dir, pkl_filename)
 
     # Variables for saving/loading
-    model = None # GMM Model
+    model = None 
     scaler = None
     feature_columns = None
     encoders = {}
+    optimal_k = None 
+    is_trained = False
 
     ## --- CASE 1: Load existing model ---
-    if os.path.exists(model_path):
+    if os.path.exists(full_path):
         print(f"**[INFO] Loading existing Gaussian Mixture Model '{pkl_filename}'...**")
-        # Load the four required components
-        model, scaler, feature_columns, encoders = load(model_path)
-        print("[INFO] Model loaded successfully.")
+        try:
+            # Load the five required components
+            model, scaler, feature_columns, encoders, optimal_k = load(full_path)
+            print(f"[INFO] Model loaded successfully. Optimal K: {optimal_k}")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
 
     ## --- CASE 2: Train and Save a new model ---
-    else:
-        # --- LOAD DATA (Restored robust multi-file loading logic) ---
+    if not is_trained:
+        ## --- LOAD DATA ---
         ext = os.path.splitext(dataset_path)[1].lower()
         try:
             if ext == '.csv':
@@ -58,14 +102,13 @@ def train_and_save_model(dataset_path: str, pkl_filename: str):
                 try:
                     data = pd.read_csv(dataset_path, sep=None, engine='python')
                 except:
-                    with open(dataset_path, 'r', encoding='utf-8') as f:
+                    with open(dataset_path, "r", encoding="utf-8") as f:
                         content = f.read()
                     data = pd.read_csv(StringIO(content))
         except Exception as e:
             print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # X is the entire dataset (unsupervised)
         X = data.copy()
 
         # --- PREPROCESSING ---
@@ -80,93 +123,156 @@ def train_and_save_model(dataset_path: str, pkl_filename: str):
         # 2. Fill NA (Imputation)
         X.fillna(X.mean(numeric_only=True), inplace=True)
 
-        # 3. SCALING
+        # 3. SCALING (CRITICAL for GMM)
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         feature_columns = list(X.columns)
 
-        # --- TRAIN GAUSSIAN MIXTURE MODEL ---
-        print(f"\n**[INFO] Training Gaussian Mixture Model with n_components={DEFAULT_N_COMPONENTS}...**")
+        ## --- OPTIMAL K SELECTION (NEW STEP) ---
+        optimal_k = find_optimal_k_gmm(X_scaled, DEFAULT_K_RANGE)
+
+        # --- TRAIN FINAL GMM MODEL ---
+        print(f"\n**[INFO] Training FINAL Gaussian Mixture Model with K={optimal_k}...**")
         
         model = GaussianMixture(
-            n_components=DEFAULT_N_COMPONENTS,
-            covariance_type='full', # Standard choice
-            random_state=42
+            n_components=optimal_k,
+            covariance_type=DEFAULT_COVARIANCE_TYPE, 
+            random_state=42,
+            max_iter=DEFAULT_MAX_ITER,
+            n_init=DEFAULT_N_INIT # FIX APPLIED
         )
         labels = model.fit_predict(X_scaled) # Fit and predict labels on training data
 
         # --- EVALUATION ---
-        if len(np.unique(labels)) > 1:
-            # Silhouette Score is the standard metric for clustering
+        if optimal_k > 1:
             score = silhouette_score(X_scaled, labels)
-            print(f"Training completion: Silhouette Score = {score:.4f}")
+            print(f"\n[INFO] Final Silhouette Score (K={optimal_k}): **{score:.4f}**")
         else:
-            print("Training completed with only 1 effective cluster. Silhouette Score not calculated.")
+            print("[INFO] Final model resulted in 1 cluster. Silhouette Score not calculated.")
 
         # --- SAVE THE MODEL COMPONENTS ---
-        # Save the GMM model, scaler, feature names, and encoders
-        dump((model, scaler, feature_columns, encoders), model_path)
-        print(f"Model saved as '{pkl_filename}'")
+        # Save the GMM model, scaler, feature names, encoders, and optimal_k
+        dump((model, scaler, feature_columns, encoders, optimal_k), full_path)
+        print(f"[INFO] Model saved as '{pkl_filename}' (K={optimal_k})")
+        is_trained = True
 
-    # --- Prediction function ---
-    def predict():
-        if not model:
-            print("[ERROR] Model not loaded/trained. Cannot predict.", file=sys.stderr)
-            return
+    # --- Prediction function (Unlimited Loop for new data inference) ---
+    def predict_loop():
+        nonlocal model, scaler, feature_columns, encoders, optimal_k
+        
+        if model is None:
+            try:
+                # Load the five required components
+                model, scaler, feature_columns, encoders, optimal_k = load(full_path)
+            except Exception as e:
+                print(f"[FATAL ERROR] Failed to load model for prediction: {e}", file=sys.stderr)
+                return
             
-        print("\n" + "="*50)
-        print("ENTER FEATURE VALUES FOR CLUSTER PREDICTION (GMM)")
-        print("="*50)
-        user_input_dict = {}
+        print("\n" + "="*70)
+        print(f"**Starting UNLIMITED Cluster Prediction Mode for '{pkl_filename}'**")
+        print(f"Model uses {optimal_k} optimized clusters.")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
+        
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        value = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(value).strip()
 
-        for col in feature_columns:
-            while True:
-                try:
-                    value = input(f"Enter value for **{col}**: ")
-                    
-                    if col in encoders:
-                        le = encoders[col]
-                        try:
-                            encoded_value = le.transform([str(value).strip()])[0]
-                            user_input_dict[col] = encoded_value
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
                             break
-                        except ValueError:
-                            print(f"[ERROR] Value '{value}' for column '{col}' is not a known category. Please re-enter.")
-                            continue
-                    else:
-                        user_input_dict[col] = float(value)
-                        break
-                except ValueError:
-                    print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
-                    continue
+                            
+                        # Handle categorical columns using the saved encoders
+                        if col in encoders:
+                            le = encoders[col]
+                            try:
+                                encoded_value = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_value)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        
+                        # Handle numerical columns
+                        else:
+                            user_vals.append(float(value))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
+                
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Prediction mode terminated by user.**")
+                break
 
-        user_df = pd.DataFrame([user_input_dict], columns=feature_columns)
-        
-        # FIX: Convert DataFrame to NumPy array and reshape only if necessary (GMM expects 2D array)
-        user_scaled = scaler.transform(user_df.to_numpy())
-        
-        # Use GMM's native .predict() method
-        pred = model.predict(user_scaled)[0]
-        
-        print("\n" + "="*50)
-        print(f"**[RESULT] Assigned Cluster/Component: {pred}**")
-        print("="*50)
+            # Convert user input to a DataFrame
+            user_df = pd.DataFrame([user_vals], columns=feature_columns)
+            
+            # Apply scaling (resolves UserWarning)
+            user_scaled = scaler.transform(user_df)
 
-    return predict
+            # Predict component assignment using the GMM's native .predict() method
+            cluster = model.predict(user_scaled)[0]
+
+            print("\n" + "="*30)
+            print(f"**[RESULT] Assigned Component/Cluster: {int(cluster)}**")
+            print("="*30)
+
+    return predict_loop
+
 
 if __name__ == "__main__":
-    # Check for correct number of arguments (script_name, dataset_path, pkl_filename)
-    if len(sys.argv) != 3:
-        print("Usage: python script_name.py <dataset_path> <pkl_filename>")
-        print("Note: The target_column argument is removed for clustering problems.")
+    # Updated CLI checks to match the deployment standard structure
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage (Train/Predict): python script_name.py <dataset_path> <pkl_filename>")
+        print("Usage (Predict Only): python script_name.py <pkl_filename> predict_only")
         sys.exit(1)
         
-    dataset_path = sys.argv[1]
-    pkl_filename = sys.argv[2]
+    if len(sys.argv) == 3:
+        if sys.argv[2].lower() == 'predict_only':
+            # Transform Only Mode
+            pkl_filename = sys.argv[1]
+            try:
+                # Use dummy path/None value
+                predict_func = train_and_save_model(None, pkl_filename) 
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Standard Training and Prediction
+            dataset_path = sys.argv[1]
+            pkl_filename = sys.argv[2]
+            try:
+                predict_func = train_and_save_model(dataset_path, pkl_filename)
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
     
-    try:
-        predict_func = train_and_save_model(dataset_path, pkl_filename)
-        predict_func()
-    except Exception as e:
-        print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+    elif len(sys.argv) == 2:
+        # Prediction Only Mode shortcut (python script_name.py pkl_filename)
+        pkl_filename = sys.argv[1]
+        try:
+            predict_func = train_and_save_model(None, pkl_filename)
+            predict_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
         sys.exit(1)

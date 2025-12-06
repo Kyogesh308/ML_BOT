@@ -1,81 +1,228 @@
 import pandas as pd
 import numpy as np
-from sklearn.feature_agglomeration import FeatureAgglomeration
-from sklearn.metrics import accuracy_score
+import os
+import sys
+from io import StringIO
 from joblib import dump, load
+# FeatureAgglomeration is used here for dimensionality reduction
+from sklearn.cluster import FeatureAgglomeration
+# Added crucial imports for robust preprocessing
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 
-def train_and_save_model(dataset_path, target_column, pkl_filename):
+# --- Constants ---
+# Default number of clusters/components
+DEFAULT_N_CLUSTERS = 10 
+
+def train_and_save_reducer(dataset_path: str, n_components: int, pkl_filename: str):
+    """
+    Trains a FeatureAgglomeration model and saves the fitted model, scaler, 
+    feature columns, and encoders for consistent transformation.
+    """
+    
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
-
     full_path = os.path.join(trained_dir, pkl_filename)
 
-    # Load existing model
+    # Variables for saving/loading
+    reducer = None
+    scaler = None
+    feature_columns = None
+    encoders = {}
+    is_trained = False
+
+    # --- CASE 1: Load existing model ---
     if os.path.exists(full_path):
-        print(f"Model already trained. Loading '{pkl_filename}'...")
-        model, scaler, columns = load(full_path)
-        print("Model loaded successfully.")
-    else:
-        # Load dataset
+        print(f"**[INFO] Loading existing FeatureAgglomeration model '{pkl_filename}'...**")
+        try:
+            # FIX: Must load all four components (model, scaler, columns, encoders)
+            reducer, scaler, feature_columns, encoders = load(full_path) 
+            print("[INFO] Reducer loaded successfully.")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
+
+    # --- CASE 2: Train a new model (or retrain if loading failed) ---
+    if not is_trained:
+        # --- LOAD DATA (Robust multi-format support) ---
         ext = os.path.splitext(dataset_path)[1].lower()
-        if ext == '.csv':
-            data = pd.read_csv(dataset_path)
-        elif ext in ['.xls', '.xlsx']:
-            data = pd.read_excel(dataset_path)
-        elif ext == '.json':
-            data = pd.read_json(dataset_path)
-        elif ext == '.parquet':
-            data = pd.read_parquet(dataset_path)
-        else:
-            try:
-                data = pd.read_csv(dataset_path, sep=None, engine='python')
-            except:
-                with open(dataset_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                data = pd.read_csv(StringIO(content))
+        try:
+            if ext == ".csv":
+                data = pd.read_csv(dataset_path)
+            elif ext in [".xls", ".xlsx"]:
+                data = pd.read_excel(dataset_path)
+            elif ext == ".json":
+                data = pd.read_json(dataset_path)
+            elif ext == ".parquet":
+                data = pd.read_parquet(dataset_path)
+            else:
+                try:
+                    data = pd.read_csv(dataset_path, sep=None, engine='python')
+                except:
+                    with open(dataset_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    data = pd.read_csv(StringIO(content))
+        except Exception as e:
+            print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
+            sys.exit(1)
 
-        # Separate label column (may contain NaN for unlabeled data)
-        y = data[target_column].fillna(-1)
+        # --- PREPROCESSING (Template Standardization) ---
 
-        # Features
-        X = data.drop(target_column, axis=1)
-        X.fillna(X.mean(), inplace=True)
+        # 1. Encode String (Categorical) Columns
+        for col in data.columns:
+            if data[col].dtype == object:
+                le = LabelEncoder()
+                data[col] = le.fit_transform(data[col].astype(str))
+                encoders[col] = le
+        
+        # 2. Impute NaNs (Numerical columns only)
+        data.fillna(data.mean(numeric_only=True), inplace=True) 
 
+        # Keep only numerical columns (after encoding, everything should be numeric)
+        X = data.select_dtypes(include=[np.number])
+        
+        if X.shape[1] == 0:
+            raise ValueError("Dataset contains no numeric columns after encoding.")
+
+        # 3. Validation
+        if n_components >= X.shape[1]:
+            raise ValueError(f"n_components ({n_components}) must be less than number of features ({X.shape[1]}).")
+
+        # 4. SCALING (CRITICAL for distance-based clustering/agglomeration)
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
+        feature_columns = list(X.columns)
 
-        # Train semi-supervised model
-        model = FeatureAgglomeration(n_clusters=8)
-        model.fit(X_scaled, y)
+        # --- TRAIN FEATURE AGGLOMERATION MODEL ---
+        print(f"\n**[INFO] Training FeatureAgglomeration model (n_components={n_components})...**")
 
-        # Predict every sample (transduction)
-        y_pred = model.transduction_
+        # FeatureAgglomeration is used here for dimensionality reduction (clustering features)
+        reducer = FeatureAgglomeration(n_clusters=n_components)
 
-        # Evaluate only on known labels
-        known_mask = y != -1
-        if known_mask.any():
-            acc = accuracy_score(y[known_mask], y_pred[known_mask])
-            print(f"Training completion: Accuracy on known labels = {acc:.3f}")
-        else:
-            print("Training completed with no known labels (fully unsupervised mode).")
+        X_reduced = reducer.fit_transform(X_scaled)
+        print(f"[INFO] Training complete. Reduced shape: {X_reduced.shape}")
 
-        # Save the model
-        dump((model, scaler, list(X.columns)), full_path)
-        print(f"Model saved as '{pkl_filename}'")
+        # --- SAVE MODEL ---
+        # Save all four components (reducer, scaler, columns, encoders)
+        dump((reducer, scaler, feature_columns, encoders), full_path)
+        print(f"[INFO] FeatureAgglomeration model saved as '{pkl_filename}'")
+        is_trained = True
 
-    # Prediction function
-    def predict():
-        model, scaler, columns = load(full_path)
-        X_new = []
-        for col in columns:
-            val = float(input(f"Enter value for column {col}: "))
-            X_new.append(val)
-        X_new = scaler.transform([X_new])
-        pred = model.predict(X_new)[0]
-        print(f"Predicted outcome: {pred}")
+    # --- Transformation function (Unlimited Loop) ---
+    def transform_loop():
+        nonlocal reducer, scaler, feature_columns, encoders
+        
+        if reducer is None:
+            try:
+                # Load all four components
+                reducer, scaler, feature_columns, encoders = load(full_path)
+            except Exception as e:
+                print(f"[FATAL ERROR] Failed to load model for transformation. Check the .pkl file: {e}", file=sys.stderr)
+                return
 
-    return predict
+        print("\n" + "="*70)
+        print(f"ENTER FEATURE VALUES FOR DIMENSIONALITY REDUCTION (N={reducer.n_clusters} components)")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
+
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        val = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(val).strip()
+
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
+                            break
+
+                        if col in encoders:
+                            # Use saved encoder for categorical columns
+                            le = encoders[col]
+                            try:
+                                encoded_val = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_val)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        else:
+                            # For numeric columns
+                            user_vals.append(float(val))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
+                
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Transformation mode terminated by user.**")
+                break
+
+            # Convert list to DataFrame
+            df_input = pd.DataFrame([user_vals], columns=feature_columns)
+            
+            # Scale the input using the saved scaler (resolves UserWarning)
+            user_scaled = scaler.transform(df_input) 
+
+            # Transform the scaled input using the reducer model
+            reduced = reducer.transform(user_scaled)
+            
+            print("\n" + "="*30)
+            print(f"**[RESULT] Reduced Vector ({reducer.n_clusters}D):**")
+            print(reduced[0]) 
+            print("="*30)
+
+    return transform_loop
+
 
 if __name__ == "__main__":
-    predict_func = train_and_save_model(sys.argv[1], sys.argv[2], sys.argv[3])
-    predict_func()
+    # FIX: Updated CLI checks to match the deployment standard structure
+    if len(sys.argv) < 2 or len(sys.argv) > 4:
+        print("Usage (Train/Transform): python script_name.py <dataset_path> <n_components> <pkl_filename>")
+        print("Usage (Transform Only): python script_name.py <pkl_filename> transform_only")
+        sys.exit(1)
+        
+    if len(sys.argv) == 4:
+        # Standard Training and Transformation
+        dataset_path = sys.argv[1]
+        
+        try:
+            n_components = int(sys.argv[2])
+        except ValueError:
+            print("[FATAL ERROR] n_components must be an integer.", file=sys.stderr)
+            sys.exit(1)
+            
+        pkl_filename = sys.argv[3]
+        
+        try:
+            transform_func = train_and_save_reducer(dataset_path, n_components, pkl_filename)
+            transform_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+            
+    elif len(sys.argv) == 3 and sys.argv[2].lower() == 'transform_only':
+        # Transform Only Mode
+        pkl_filename = sys.argv[1]
+        
+        try:
+            # Use dummy n_components (0) as it's only needed for training mode
+            transform_func = train_and_save_reducer(None, 0, pkl_filename) 
+            transform_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
+        sys.exit(1)

@@ -4,45 +4,88 @@ import os
 import sys
 from io import StringIO
 from joblib import dump, load
-
-from sklearn.preprocessing import StandardScaler, LabelEncoder # Added LabelEncoder
 from sklearn.cluster import MiniBatchKMeans
-from sklearn.metrics import silhouette_score # Added for evaluation
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import silhouette_score
 import warnings
 
 # --- Constants ---
-DEFAULT_N_CLUSTERS = 5 
-DEFAULT_BATCH_SIZE = 256 # A typical batch size for efficiency
+DEFAULT_K_RANGE = range(3, 11) # Range of K to test (3 to 10)
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_MAX_ITER = 300
+DEFAULT_N_INIT = 10 # Fixed integer value for n_init
+
+def find_optimal_k_minibatch_kmeans(X_scaled, k_range):
+    """Calculates Silhouette Score for MiniBatchKMeans across a range of K and returns the optimal K."""
+    best_score = -1
+    optimal_k = k_range.start
+    
+    print(f"[INFO] Searching for optimal K using Silhouette Score across {list(k_range)} (MiniBatchKMeans)...")
+    
+    for k in k_range:
+        try:
+            # MiniBatchKMeans initialization for testing K
+            model = MiniBatchKMeans(
+                n_clusters=k, 
+                random_state=42, 
+                n_init=DEFAULT_N_INIT, # Fixed integer n_init
+                max_iter=DEFAULT_MAX_ITER,
+                batch_size=DEFAULT_BATCH_SIZE
+            )
+            
+            labels = model.fit_predict(X_scaled)
+            
+            # Skip if only 1 cluster or too few points are found
+            if len(np.unique(labels)) > 1:
+                score = silhouette_score(X_scaled, labels)
+                if score > best_score:
+                    best_score = score
+                    optimal_k = k
+            
+        except Exception as e:
+            # Catch exceptions during fitting
+            # print(f"[WARNING] Skipping K={k} due to error: {e}")
+            continue
+            
+    print(f"[INFO] Optimal K found: {optimal_k} (Silhouette Score: {best_score:.4f})")
+    return optimal_k
+
 
 def train_and_save_model(dataset_path: str, pkl_filename: str):
     """
-    Trains a MiniBatchKMeans model, saves necessary components, 
-    and returns a predict function.
-    
-    The target_column argument is implicitly ignored.
+    Trains a MiniBatchKMeans model using the optimal K determined by Silhouette Score, 
+    and saves the necessary components for prediction.
     """
     
+    # Ignore common runtime warnings
     warnings.filterwarnings("ignore", category=UserWarning)
 
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
-    model_path = os.path.join(trained_dir, pkl_filename)
+    full_path = os.path.join(trained_dir, pkl_filename)
 
     # Variables for saving/loading
     model = None
     scaler = None
     feature_columns = None
     encoders = {}
+    optimal_k = None # New component to store the result of the K search
+    is_trained = False
 
     ## --- CASE 1: Load existing model ---
-    if os.path.exists(model_path):
+    if os.path.exists(full_path):
         print(f"**[INFO] Loading existing MiniBatchKMeans model '{pkl_filename}'...**")
-        # Ensure four components are loaded
-        model, scaler, feature_columns, encoders = load(model_path)
-        print("[INFO] Model loaded successfully.")
+        try:
+            # Load the five required components
+            model, scaler, feature_columns, encoders, optimal_k = load(full_path)
+            print(f"[INFO] Model loaded successfully. Optimal K: {optimal_k}")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
 
     ## --- CASE 2: Train a new model ---
-    else:
+    if not is_trained:
         # --- LOAD DATA (Robust Multi-File Loading) ---
         ext = os.path.splitext(dataset_path)[1].lower()
         try:
@@ -65,7 +108,6 @@ def train_and_save_model(dataset_path: str, pkl_filename: str):
             print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # X is the entire dataset (unsupervised, target_column is ignored)
         X = data.copy()
 
         # --- PREPROCESSING ---
@@ -85,98 +127,144 @@ def train_and_save_model(dataset_path: str, pkl_filename: str):
         X_scaled = scaler.fit_transform(X)
         feature_columns = list(X.columns)
 
-        # --- TRAIN MiniBatchKMeans ---
-        print(f"\n**[INFO] Training MiniBatchKMeans with n_clusters={DEFAULT_N_CLUSTERS}...**")
+        ## --- OPTIMAL K SELECTION (NEW STEP) ---
+        optimal_k = find_optimal_k_minibatch_kmeans(X_scaled, DEFAULT_K_RANGE)
+
+        # --- TRAIN FINAL MiniBatchKMeans ---
+        print(f"\n**[INFO] Training FINAL MiniBatchKMeans with K={optimal_k}...**")
         model = MiniBatchKMeans(
-            n_clusters=DEFAULT_N_CLUSTERS,
-            batch_size=DEFAULT_BATCH_SIZE,
+            n_clusters=optimal_k,
             random_state=42,
-            n_init='auto'
+            n_init=DEFAULT_N_INIT, # Fixed integer n_init
+            max_iter=DEFAULT_MAX_ITER,
+            batch_size=DEFAULT_BATCH_SIZE
         )
         labels = model.fit_predict(X_scaled)
         print("[INFO] Training complete.")
 
         # --- EVALUATION ---
-        if len(np.unique(labels)) > 1:
+        if optimal_k > 1:
             score = silhouette_score(X_scaled, labels)
-            print(f"[INFO] Silhouette Score (n_clusters={DEFAULT_N_CLUSTERS}): **{score:.4f}**")
+            print(f"[INFO] Final Silhouette Score (K={optimal_k}): **{score:.4f}**")
         else:
-             print("[INFO] Only 1 effective cluster found. Silhouette Score not calculated.")
+            print("[INFO] Final model resulted in 1 cluster. Silhouette Score not calculated.")
 
         # --- SAVE MODEL ---
-        # Save the model, scaler, feature names, and encoders
-        dump((model, scaler, feature_columns, encoders), model_path)
-        print(f"[INFO] Model saved as '{pkl_filename}'")
+        # Save the five required components
+        dump((model, scaler, feature_columns, encoders, optimal_k), full_path)
+        print(f"[INFO] Model saved as '{pkl_filename}' (K={optimal_k})")
 
-    # --- Prediction function ---
-    def predict():
-        nonlocal model, scaler, feature_columns, encoders
+    # --- Prediction function (Unlimited Loop) ---
+    def predict_loop():
+        nonlocal model, scaler, feature_columns, encoders, optimal_k
         
-        # Load components if not already in memory
         if model is None:
             try:
-                model, scaler, feature_columns, encoders = load(model_path)
+                model, scaler, feature_columns, encoders, optimal_k = load(full_path)
             except Exception as e:
                 print(f"[ERROR] Failed to load model for prediction: {e}", file=sys.stderr)
                 return
 
-        print("\n" + "="*50)
-        print("ENTER FEATURE VALUES FOR CLUSTER PREDICTION (MINIBATCHKMEANS)")
-        print("="*50)
-        user_vals = []
+        print("\n" + "="*70)
+        print(f"**Starting UNLIMITED Cluster Prediction Mode for '{pkl_filename}'**")
+        print(f"Model uses {optimal_k} optimized clusters.")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
         
-        for col in feature_columns:
-            while True:
-                try:
-                    val = input(f"Enter value for **{col}**: ")
-                    
-                    # Apply encoding if needed
-                    if col in encoders:
-                        le = encoders[col]
-                        try:
-                            encoded_val = le.transform([str(val).strip()])[0]
-                            user_vals.append(encoded_val)
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        val = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(val).strip()
+                        
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
                             break
-                        except ValueError:
-                            print(f"[ERROR] Value '{val}' for column '{col}' is not a known category. Known: {list(le.classes_)}")
-                            continue
-                    else:
-                        # Handle numerical input
-                        user_vals.append(float(val))
-                        break
-                except ValueError:
-                    print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
-                    continue
 
-        # Convert list to DataFrame and scale
-        df_input = pd.DataFrame([user_vals], columns=feature_columns)
-        # FIX: Use .to_numpy() to avoid feature name warning
-        user_scaled = scaler.transform(df_input.to_numpy())
+                        # Apply encoding if needed
+                        if col in encoders:
+                            le = encoders[col]
+                            try:
+                                encoded_val = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_val)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        else:
+                            # Handle numerical input
+                            user_vals.append(float(val))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
 
-        # Predict cluster using MiniBatchKMeans's native .predict()
-        cluster_id = model.predict(user_scaled)[0]
-        
-        print("\n" + "="*50)
-        print(f"**[RESULT] Assigned Cluster: {cluster_id}**")
-        print("="*50)
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Prediction mode terminated by user.**")
+                break
 
-    return predict
+            # Convert list to DataFrame and scale
+            df_input = pd.DataFrame([user_vals], columns=feature_columns)
+            user_scaled = scaler.transform(df_input) # FIX: Pass DataFrame directly to scaler
+
+            # Predict cluster using MiniBatchKMeans's native .predict()
+            cluster_id = model.predict(user_scaled)[0]
+            
+            print("\n" + "="*30)
+            print(f"**[RESULT] Assigned Cluster: {int(cluster_id)}**")
+            print("="*30)
+
+    return predict_loop
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        # Corrected argument count for unsupervised learning
-        print("Usage: python script_name.py <dataset_path> <pkl_filename>")
-        print("Note: The target_column argument is implicitly ignored.")
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage (Train/Predict): python script_name.py <dataset_path> <pkl_filename>")
+        print("Usage (Predict Only): python script_name.py <pkl_filename> predict_only")
         sys.exit(1)
         
-    dataset_path = sys.argv[1]
-    pkl_filename = sys.argv[2]
+    if len(sys.argv) == 3:
+        if sys.argv[2].lower() == 'predict_only':
+            # Transform Only Mode
+            pkl_filename = sys.argv[1]
+            try:
+                predict_func = train_and_save_model(None, pkl_filename) 
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Standard Training and Prediction
+            dataset_path = sys.argv[1]
+            pkl_filename = sys.argv[2]
+            try:
+                predict_func = train_and_save_model(dataset_path, pkl_filename)
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
     
-    try:
-        # NOTE: target_column is not passed to the main function
-        predict_func = train_and_save_model(dataset_path, pkl_filename)
-        predict_func()
-    except Exception as e:
-        print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+    elif len(sys.argv) == 2:
+        # Prediction Only Mode shortcut (python script_name.py pkl_filename)
+        pkl_filename = sys.argv[1]
+        try:
+            predict_func = train_and_save_model(None, pkl_filename)
+            predict_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
         sys.exit(1)

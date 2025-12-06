@@ -4,21 +4,45 @@ import os
 import sys
 from io import StringIO
 from joblib import dump, load
-from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import SparsePCA
+# Added crucial import for robust preprocessing
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 
-def train_and_save_reducer(dataset_path, n_components, pkl_filename):
+# --- Constants ---
+DEFAULT_FILL_VALUE = 0.0 
+
+def train_and_save_reducer(dataset_path: str, n_components: int, pkl_filename: str):
+    """
+    Trains a SparsePCA model, saves the fitted model, scaler, 
+    feature columns, and encoders for consistent transformation.
+    """
+    
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
     full_path = os.path.join(trained_dir, pkl_filename)
 
-    # Load existing model if already trained
+    # Variables for saving/loading
+    reducer = None
+    scaler = None
+    feature_columns = None
+    encoders = {} # FIX 3: Initialize encoders for template consistency
+    is_trained = False
+
+    # --- CASE 1: Load existing model ---
     if os.path.exists(full_path):
-        print(f"Reducer already trained. Loading '{pkl_filename}'...")
-        reducer, scaler, columns = load(full_path)
-        print("Reducer loaded successfully.")
-    else:
-        # Load dataset (multi-format support)
+        print(f"**[INFO] Loading existing SparsePCA model '{pkl_filename}'...**")
+        try:
+            # FIX 3: Must load all four components (model, scaler, columns, encoders)
+            reducer, scaler, feature_columns, encoders = load(full_path) 
+            print("[INFO] Reducer loaded successfully.")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
+
+    # --- CASE 2: Train a new model (or retrain if loading failed) ---
+    if not is_trained:
+        # --- LOAD DATA ---
         ext = os.path.splitext(dataset_path)[1].lower()
         try:
             if ext == ".csv":
@@ -30,63 +54,174 @@ def train_and_save_reducer(dataset_path, n_components, pkl_filename):
             elif ext == ".parquet":
                 data = pd.read_parquet(dataset_path)
             else:
-                data = pd.read_csv(dataset_path, sep=None, engine='python')
-        except Exception:
-            with open(dataset_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            data = pd.read_csv(StringIO(content))
+                try:
+                    data = pd.read_csv(dataset_path, sep=None, engine='python')
+                except:
+                    with open(dataset_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    data = pd.read_csv(StringIO(content))
+        except Exception as e:
+            print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
+            sys.exit(1)
 
-        # Select numeric columns only
-        data = data.select_dtypes(include=[np.number])
-        if data.shape[1] == 0:
-            raise ValueError("Dataset contains no numeric columns.")
+        # --- PREPROCESSING (Template Standardization) ---
 
-        # Validate n_components
-        if n_components >= data.shape[1]:
-            raise ValueError(f"n_components ({n_components}) must be less than number of features ({data.shape[1]}).")
+        # 1. Encode String (Categorical) Columns (FIX 2)
+        for col in data.columns:
+            if data[col].dtype == object:
+                le = LabelEncoder()
+                data[col] = le.fit_transform(data[col].astype(str))
+                encoders[col] = le
+        
+        # 2. Impute NaNs (Numerical columns only)
+        data.fillna(data.mean(numeric_only=True), inplace=True) 
 
-        # Handle missing values
-        data.fillna(data.mean(), inplace=True)
+        # Keep only numerical columns
+        X_df = data.select_dtypes(include=[np.number])
+        
+        if X_df.shape[1] == 0:
+            raise ValueError("Dataset contains no numeric columns after encoding.")
 
-        # Scale data
+        # 3. Validation
+        if n_components >= X_df.shape[1]:
+            raise ValueError(f"n_components ({n_components}) must be less than number of features ({X_df.shape[1]}).")
+
+        # 4. SCALING (CRITICAL for PCA variants)
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(data)
+        X_scaled = scaler.fit_transform(X_df)
+        feature_columns = list(X_df.columns)
 
-        # Train SparsePCA
-        reducer = SparsePCA(n_components=n_components)
+        # --- TRAIN SPARSE PCA MODEL ---
+        print(f"\n**[INFO] Training SparsePCA model (n_components={n_components})...**")
+
+        reducer = SparsePCA(n_components=n_components, random_state=42)
+        
         reducer.fit(X_scaled)
         X_reduced = reducer.transform(X_scaled)
-        print(f"Training complete. Reduced shape: {X_reduced.shape}")
+        print(f"[INFO] Training complete. Reduced shape: {X_reduced.shape}")
 
-        # Save model
-        dump((reducer, scaler, list(data.columns)), full_path)
-        print(f"Reducer saved as '{pkl_filename}'")
+        # --- SAVE MODEL ---
+        # FIX 3: Save all four components (model, scaler, columns, encoders)
+        dump((reducer, scaler, feature_columns, encoders), full_path)
+        print(f"[INFO] SparsePCA model saved as '{pkl_filename}'")
+        is_trained = True
 
-    # Interactive transformation
-    def transform_input():
-        reducer, scaler, columns = load(full_path)
-        X_new = []
-        print("\nEnter values for the following columns:")
-        for col in columns:
-            val = float(input(f"{col}: "))
-            X_new.append(val)
+    # --- Transformation function (Unlimited Loop) ---
+    def transform_loop():
+        nonlocal reducer, scaler, feature_columns, encoders
+        
+        if reducer is None:
+            try:
+                # Load all four components
+                reducer, scaler, feature_columns, encoders = load(full_path)
+            except Exception as e:
+                print(f"[FATAL ERROR] Failed to load model for transformation. Check the .pkl file: {e}", file=sys.stderr)
+                return
 
-        X_scaled = scaler.transform([X_new])
-        reduced = reducer.transform(X_scaled)
+        print("\n" + "="*70)
+        print(f"ENTER FEATURE VALUES FOR DIMENSIONALITY REDUCTION (N={reducer.n_components} components)")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
 
-        print("\nReduced Vector Representation:")
-        print(reduced[0])
+        # FIX 5: Converted to unlimited transformation loop
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        val = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(val).strip()
 
-    return transform_input
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
+                            break
+
+                        if col in encoders:
+                            # Use saved encoder for categorical columns
+                            le = encoders[col]
+                            try:
+                                # Transform the categorical value
+                                encoded_val = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_val)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        else:
+                            # For numeric columns
+                            user_vals.append(float(val))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
+                
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Transformation mode terminated by user.**")
+                break
+
+            # Convert list to DataFrame
+            df_input = pd.DataFrame([user_vals], columns=feature_columns)
+            
+            # FIX: Scale the input using the saved scaler (resolves UserWarning)
+            user_scaled = scaler.transform(df_input) 
+
+            # Transform the scaled input using the SparsePCA model
+            reduced = reducer.transform(user_scaled)
+            
+            print("\n" + "="*30)
+            print(f"**[RESULT] Reduced Vector ({reducer.n_components}D):**")
+            print(reduced[0]) 
+            print("="*30)
+
+    return transform_loop
+
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python SparsePCA.py <dataset_path> <n_components> <pkl_filename>")
+    # FIX 4: Updated CLI checks to match the deployment standard structure
+    if len(sys.argv) < 2 or len(sys.argv) > 4:
+        print("Usage (Train/Transform): python script_name.py <dataset_path> <n_components> <pkl_filename>")
+        print("Usage (Transform Only): python script_name.py <pkl_filename> transform_only")
         sys.exit(1)
-
-    dataset_path = sys.argv[1]
-    n_components = int(sys.argv[2])
-    pkl_filename = sys.argv[3]
-
-    predict_func = train_and_save_reducer(dataset_path, n_components, pkl_filename)
-    predict_func()
+        
+    if len(sys.argv) == 4:
+        # Standard Training and Transformation
+        dataset_path = sys.argv[1]
+        pkl_filename = sys.argv[3]
+        
+        try:
+            n_components = int(sys.argv[2])
+        except ValueError:
+            print("[FATAL ERROR] n_components must be an integer.", file=sys.stderr)
+            sys.exit(1)
+            
+        try:
+            transform_func = train_and_save_reducer(dataset_path, n_components, pkl_filename)
+            transform_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+            
+    elif len(sys.argv) == 3 and sys.argv[2].lower() == 'transform_only':
+        # Transform Only Mode
+        pkl_filename = sys.argv[1]
+        
+        try:
+            # Use dummy n_components (0) as it's only needed for training mode
+            transform_func = train_and_save_reducer(None, 0, pkl_filename) 
+            transform_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
+        sys.exit(1)

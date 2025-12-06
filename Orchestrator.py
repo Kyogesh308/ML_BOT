@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import string
-from columns_check import *
+
 from ModelSuggestion import model_suggestion
 from ModelGenerator import *
 from io import StringIO

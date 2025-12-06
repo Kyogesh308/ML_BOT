@@ -4,24 +4,51 @@ import os
 import sys
 from io import StringIO
 from joblib import dump, load
-
 from sklearn.cluster import Birch
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import silhouette_score
 import warnings
 
-# Define a reasonable number of clusters (Birch's n_clusters is often set high 
-# to allow it to find the natural groupings, or set to None for only tree building)
-DEFAULT_N_CLUSTERS = 5 
-# Recommended parameters for Birch
+# --- Constants ---
+DEFAULT_K_RANGE = range(3, 11) # Range of K to test (3 to 10)
 DEFAULT_THRESHOLD = 0.5 
+DEFAULT_BRANCHING_FACTOR = 50
+DEFAULT_MAX_ITER = 300 # Used for KMeans/GMM, kept for structural consistency
+
+def find_optimal_k_birch(X_scaled, k_range):
+    """Calculates Silhouette Score for BIRCH across a range of K and returns the optimal K."""
+    best_score = -1
+    optimal_k = k_range.start
+    
+    print(f"[INFO] Searching for optimal K using Silhouette Score across {list(k_range)} (BIRCH)...")
+    
+    for k in k_range:
+        try:
+            # BIRCH is initialized to build the CF tree first, then sets n_clusters for the final step.
+            model = Birch(n_clusters=k, threshold=DEFAULT_THRESHOLD, branching_factor=DEFAULT_BRANCHING_FACTOR)
+            
+            labels = model.fit_predict(X_scaled)
+            
+            # Skip if only 1 cluster or too few points are found
+            if len(np.unique(labels)) > 1:
+                score = silhouette_score(X_scaled, labels)
+                if score > best_score:
+                    best_score = score
+                    optimal_k = k
+            
+        except Exception as e:
+            # Catch exceptions during fitting (e.g., singular matrix due to bad k)
+            # print(f"[WARNING] Skipping K={k} due to error: {e}")
+            continue
+            
+    print(f"[INFO] Optimal K found: {optimal_k} (Silhouette Score: {best_score:.4f})")
+    return optimal_k
+
 
 def train_and_save_birch(dataset_path: str, pkl_filename: str):
     """
-    Trains a Birch Clustering model, saves necessary components, 
-    and returns a predict function.
-    
-    The target_column argument is removed as clustering is unsupervised.
+    Trains a Birch Clustering model using the optimal K determined by Silhouette Score, 
+    and saves the necessary components for prediction.
     """
     
     # Ignore common runtime warnings (e.g., related to feature calculation)
@@ -29,23 +56,30 @@ def train_and_save_birch(dataset_path: str, pkl_filename: str):
 
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
-    model_path = os.path.join(trained_dir, pkl_filename)
+    full_path = os.path.join(trained_dir, pkl_filename)
 
     # Variables to store components for saving/loading
     model = None
     scaler = None
     feature_columns = None
     encoders = {}
+    optimal_k = None # New component to store the result of the K search
+    is_trained = False
 
     ## --- CASE 1: Load existing model ---
-    if os.path.exists(model_path):
+    if os.path.exists(full_path):
         print(f"**[INFO] Loading existing Birch model '{pkl_filename}'...**")
-        # Ensure we load all four saved components
-        model, scaler, feature_columns, encoders = load(model_path)
-        print("[INFO] Model loaded successfully.")
+        try:
+            # Load the five required components
+            model, scaler, feature_columns, encoders, optimal_k = load(full_path)
+            print(f"[INFO] Model loaded successfully. Optimal K: {optimal_k}")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
 
     ## --- CASE 2: Train and Save a new model ---
-    else:
+    if not is_trained:
         ## --- LOAD DATA ---
         ext = os.path.splitext(dataset_path)[1].lower()
         try:
@@ -58,10 +92,13 @@ def train_and_save_birch(dataset_path: str, pkl_filename: str):
             elif ext == '.parquet':
                 data = pd.read_parquet(dataset_path)
             else:
-                # Fallback attempt for CSV-like files
-                data = pd.read_csv(dataset_path, sep=None, engine='python')
+                try:
+                    data = pd.read_csv(dataset_path, sep=None, engine='python')
+                except:
+                    with open(dataset_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    data = pd.read_csv(StringIO(content))
         except Exception as e:
-            # Added more robust error handling for data loading
             print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
             sys.exit(1)
 
@@ -74,119 +111,166 @@ def train_and_save_birch(dataset_path: str, pkl_filename: str):
         for col in X.columns:
             if X[col].dtype == object:
                 le = LabelEncoder()
-                # Use .astype(str) to handle potential mixed types or NaNs gracefully
                 X[col] = le.fit_transform(X[col].astype(str))
                 encoders[col] = le
 
         # 2. Fill NA (Imputation)
-        # Only use mean for columns that are numerically type-castable
         X.fillna(X.mean(numeric_only=True), inplace=True)
 
-        # 3. SCALING
+        # 3. SCALING (CRITICAL for distance-based clustering)
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # Keep track of feature names
         feature_columns = list(X.columns)
 
-        ## --- TRAIN BIRCH MODEL ---
-        print(f"\n**[INFO] Training Birch Clustering with n_clusters={DEFAULT_N_CLUSTERS} and threshold={DEFAULT_THRESHOLD}...**")
+        ## --- OPTIMAL K SELECTION (NEW STEP) ---
+        optimal_k = find_optimal_k_birch(X_scaled, DEFAULT_K_RANGE)
+
+        ## --- TRAIN FINAL BIRCH MODEL ---
+        print(f"\n**[INFO] Training FINAL BIRCH Clustering with K={optimal_k}...**")
         
-        # Initialize and fit the Birch model
+        # Fit model using the optimal K determined by the search
         model = Birch(
-            n_clusters=DEFAULT_N_CLUSTERS, 
+            n_clusters=optimal_k, 
             threshold=DEFAULT_THRESHOLD,
-            branching_factor=50 # Default, good for most cases
+            branching_factor=DEFAULT_BRANCHING_FACTOR 
         )
 
-        # Fit the model and get the cluster assignments (labels)
         labels = model.fit_predict(X_scaled)
 
         ## --- EVALUATION ---
-        if len(np.unique(labels)) > 1:
-            # Silhouette Score is the standard metric for clustering evaluation
+        if optimal_k > 1:
             score = silhouette_score(X_scaled, labels)
-            print(f"\n[INFO] Silhouette Score: **{score:.4f}**")
+            print(f"\n[INFO] Final Silhouette Score (K={optimal_k}): **{score:.4f}**")
         else:
-             print("[INFO] Only 1 effective cluster found. Silhouette Score not calculated.")
+            print("[INFO] Final model resulted in 1 cluster. Silhouette Score not calculated.")
 
         ## --- SAVE MODEL COMPONENTS ---
-        # Save the model, scaler, feature names, and encoders
-        dump((model, scaler, feature_columns, encoders), model_path)
-        print(f"\n[INFO] Birch Model saved as '{pkl_filename}'")
+        # Save the model, scaler, feature names, encoders, and optimal_k
+        dump((model, scaler, feature_columns, encoders, optimal_k), full_path)
+        print(f"\n[INFO] Birch Model saved as '{pkl_filename}' (K={optimal_k})")
+        is_trained = True
     
     
-    ## --- PREDICT FUNCTION (for new data inference) ---
-    def predict():
-        """
-        Prompts the user for feature values, preprocesses the input, 
-        and prints the cluster assignment.
-        """
-        if not model:
-            print("[ERROR] Model not loaded/trained. Cannot predict.", file=sys.stderr)
-            return
-
-        print("\n" + "="*50)
-        print("ENTER FEATURE VALUES FOR CLUSTER PREDICTION (BIRCH)")
-        print("="*50)
-        user_input_dict = {}
-
-        for col in feature_columns:
-            while True:
-                try:
-                    value = input(f"Enter value for **{col}**: ")
-                    
-                    # Handle categorical columns using the saved encoders
-                    if col in encoders:
-                        le = encoders[col]
-                        try:
-                            encoded_value = le.transform([str(value).strip()])[0]
-                            user_input_dict[col] = encoded_value
-                            break
-                        except ValueError:
-                            print(f"[ERROR] Value '{value}' for column '{col}' is not a known category. Please re-enter.")
-                            continue
-                    
-                    # Handle numerical columns
-                    else:
-                        user_input_dict[col] = float(value)
-                        break
-                except ValueError:
-                    print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
-                    continue
+    ## --- PREDICT FUNCTION (Unlimited Loop for new data inference) ---
+    def predict_loop():
+        nonlocal model, scaler, feature_columns, encoders, optimal_k
         
-        # Convert user input to a DataFrame, ensuring column order matches training
-        # We use .to_numpy() to get the required shape for scaling
-        user_df = pd.DataFrame([user_input_dict], columns=feature_columns)
+        if model is None:
+            try:
+                # Load the five required components
+                model, scaler, feature_columns, encoders, optimal_k = load(full_path)
+            except Exception as e:
+                print(f"[FATAL ERROR] Failed to load model for prediction: {e}", file=sys.stderr)
+                return
 
-        # Scale user input
-        user_scaled = scaler.transform(user_df.to_numpy())
+        print("\n" + "="*70)
+        print(f"**Starting UNLIMITED Cluster Prediction Mode for '{pkl_filename}'**")
+        print(f"Model uses {optimal_k} optimized clusters.")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
 
-        # Predict cluster using the Birch's native .predict() method
-        cluster = model.predict(user_scaled)[0]
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        value = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(value).strip()
 
-        print("\n" + "="*50)
-        print(f"**[RESULT] Assigned Cluster: {cluster}**")
-        print("="*50)
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
+                            break
+                            
+                        # Handle categorical columns using the saved encoders
+                        if col in encoders:
+                            le = encoders[col]
+                            try:
+                                encoded_value = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_value)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        
+                        # Handle numerical columns
+                        else:
+                            user_vals.append(float(value))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
+                
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Prediction mode terminated by user.**")
+                break
 
-    return predict
+            # Convert user input to a DataFrame
+            user_df = pd.DataFrame([user_vals], columns=feature_columns)
+
+            # Scale user input (Pass DataFrame directly to scaler to resolve UserWarning)
+            user_scaled = scaler.transform(user_df)
+
+            # Predict cluster using the Birch's native .predict() method
+            cluster = model.predict(user_scaled)[0]
+
+            print("\n" + "="*30)
+            print(f"**[RESULT] Assigned Cluster: {int(cluster)}**")
+            print("="*30)
+
+    return predict_loop
 
 
 if __name__ == "__main__":
-    # Check for correct number of arguments (script_name, dataset_path, pkl_filename)
-    if len(sys.argv) != 3:
-        print("Usage: python script_name.py <dataset_path> <pkl_filename>")
-        print("Note: The target_column argument is removed for clustering problems.")
+    # Updated CLI checks to match the deployment standard structure
+    # Expects: dataset_path, pkl_filename (2 args for train/predict)
+    
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage (Train/Predict): python script_name.py <dataset_path> <pkl_filename>")
+        print("Usage (Predict Only): python script_name.py <pkl_filename> predict_only")
         sys.exit(1)
         
-    dataset_path = sys.argv[1]
-    pkl_filename = sys.argv[2]
+    if len(sys.argv) == 3:
+        if sys.argv[2].lower() == 'predict_only':
+            # Transform Only Mode
+            pkl_filename = sys.argv[1]
+            try:
+                # Use dummy path/None value
+                predict_func = train_and_save_birch(None, pkl_filename) 
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # Standard Training and Prediction
+            dataset_path = sys.argv[1]
+            pkl_filename = sys.argv[2]
+            try:
+                predict_func = train_and_save_birch(dataset_path, pkl_filename)
+                predict_func()
+            except Exception as e:
+                print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+                sys.exit(1)
     
-    try:
-        # train_and_save_birch returns the prediction function
-        predict_func = train_and_save_birch(dataset_path, pkl_filename)
-        # Call the prediction function
-        predict_func()
-    except Exception as e:
-        print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+    elif len(sys.argv) == 2:
+        # Prediction Only Mode shortcut (python script_name.py pkl_filename)
+        pkl_filename = sys.argv[1]
+        try:
+            predict_func = train_and_save_birch(None, pkl_filename)
+            predict_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
         sys.exit(1)

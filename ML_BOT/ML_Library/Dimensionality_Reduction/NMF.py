@@ -2,31 +2,48 @@ import pandas as pd
 import numpy as np
 import os
 import sys
-import importlib
 from io import StringIO
 from joblib import dump, load
-from sklearn.preprocessing import MinMaxScaler
+# Added crucial imports for robust preprocessing
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from sklearn.decomposition import NMF # Removed redundant import block
 
+# --- Constants ---
+DEFAULT_FILL_VALUE = 0.0 
 
-def train_and_save_nmf(dataset_path, n_components, pkl_filename):
+def train_and_save_nmf(dataset_path: str, n_components: int, pkl_filename: str):
+    """
+    Trains an NMF model (non-negative matrix factorization), saves the fitted model, scaler, 
+    feature columns, and encoders for consistent transformation.
+    """
+    
     trained_dir = "Trained_Models"
     os.makedirs(trained_dir, exist_ok=True)
-
     full_path = os.path.join(trained_dir, pkl_filename)
 
-    # -------------------------------------------------
-    # Load existing model
-    # -------------------------------------------------
-    if os.path.exists(full_path):
-        print(f"NMF reducer already trained. Loading '{pkl_filename}'...")
-        nmf_model, scaler, columns = load(full_path)
-        print("Loaded successfully.")
-    else:
-        # -------------------------------------------------
-        # Load dataset (multi-format support)
-        # -------------------------------------------------
-        ext = os.path.splitext(dataset_path)[1].lower()
+    # Variables for saving/loading
+    nmf_model = None
+    scaler = None
+    feature_columns = None
+    encoders = {} # FIX 3: Initialize encoders for template consistency
+    is_trained = False
 
+    # --- CASE 1: Load existing model ---
+    if os.path.exists(full_path):
+        print(f"**[INFO] Loading existing NMF reducer '{pkl_filename}'...**")
+        try:
+            # FIX 3: Must load all four components (model, scaler, columns, encoders)
+            nmf_model, scaler, feature_columns, encoders = load(full_path) 
+            print("[INFO] Loaded successfully.")
+            is_trained = True
+        except Exception as e:
+            print(f"[WARNING] Could not load model from '{full_path}' due to error: {e}. Retraining...")
+            pass
+
+    # --- CASE 2: Train a new model (or retrain if loading failed) ---
+    if not is_trained:
+        # --- LOAD DATA ---
+        ext = os.path.splitext(dataset_path)[1].lower()
         try:
             if ext == ".csv":
                 data = pd.read_csv(dataset_path)
@@ -37,71 +54,182 @@ def train_and_save_nmf(dataset_path, n_components, pkl_filename):
             elif ext == ".parquet":
                 data = pd.read_parquet(dataset_path)
             else:
-                data = pd.read_csv(dataset_path, sep=None, engine='python')
-        except:
-            with open(dataset_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            data = pd.read_csv(StringIO(content))
+                try:
+                    data = pd.read_csv(dataset_path, sep=None, engine='python')
+                except:
+                    with open(dataset_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    data = pd.read_csv(StringIO(content))
+        except Exception as e:
+            print(f"[ERROR] Failed to load data: {e}", file=sys.stderr)
+            sys.exit(1)
 
-        # -------------------------------------------------
-        # NMF requires numeric and non-negative data
-        # -------------------------------------------------
-        data = data.select_dtypes(include=[np.number])
-        if data.shape[1] == 0:
-            raise ValueError("Dataset contains no numeric columns.")
+        # --- PREPROCESSING (Template Standardization) ---
 
-        data.fillna(data.mean(), inplace=True)
+        # 1. Encode String (Categorical) Columns (FIX 2)
+        for col in data.columns:
+            if data[col].dtype == object:
+                le = LabelEncoder()
+                data[col] = le.fit_transform(data[col].astype(str))
+                encoders[col] = le
+        
+        # 2. Impute NaNs (Numerical columns only)
+        data.fillna(data.mean(numeric_only=True), inplace=True) 
 
-        # -------------------------------------------------
-        # Scale to non-negative range [0, 1]
-        # MinMaxScaler is the correct preprocessing for NMF
-        # -------------------------------------------------
+        # Keep only numerical columns
+        X_df = data.select_dtypes(include=[np.number])
+        
+        if X_df.shape[1] == 0:
+            raise ValueError("Dataset contains no numeric columns after encoding.")
+
+        # 3. Validation and NMF Non-Negativity Check
+        if n_components >= X_df.shape[1]:
+            raise ValueError(f"n_components ({n_components}) must be less than number of features ({X_df.shape[1]}).")
+        
+        if (X_df < 0).any().any():
+            print("[WARNING] NMF requires non-negative data. MinMaxScaler will ensure non-negativity by shifting the data.")
+            
+        # 4. SCALING (CRITICAL for NMF)
+        # MinMaxScaler is the correct preprocessing for NMF to ensure data remains non-negative
         scaler = MinMaxScaler()
-        X_scaled = scaler.fit_transform(data)
+        X_scaled = scaler.fit_transform(X_df)
+        feature_columns = list(X_df.columns)
 
-        # -------------------------------------------------
-        # Import NMF dynamically
-        # -------------------------------------------------
-        from sklearn.decomposition import NMF
-        nmf_model = NMF(n_components=n_components, init="nndsvda", max_iter=1000)
+        # --- TRAIN NMF MODEL ---
+        print(f"\n**[INFO] Training NMF model (n_components={n_components})...**")
 
-        # -------------------------------------------------
-        # Fit NMF
-        # -------------------------------------------------
+        nmf_model = NMF(
+            n_components=n_components, 
+            init="nndsvda", # Preferred initialization method
+            max_iter=1000,
+            random_state=42
+        )
+
         X_reduced = nmf_model.fit_transform(X_scaled)
-        print(f"Training complete. Reduced shape: {X_reduced.shape}")
+        print(f"[INFO] Training complete. Reduced shape: {X_reduced.shape}")
 
-        # -------------------------------------------------
-        # Save the reducer
-        # -------------------------------------------------
-        dump((nmf_model, scaler, list(data.columns)), full_path)
-        print(f"NMF reducer saved as '{pkl_filename}'")
+        # --- SAVE MODEL ---
+        # FIX 3: Save all four components (model, scaler, columns, encoders)
+        dump((nmf_model, scaler, feature_columns, encoders), full_path)
+        print(f"[INFO] NMF reducer saved as '{pkl_filename}'")
+        is_trained = True
 
-    # -------------------------------------------------
-    # Prediction / Transform function
-    # -------------------------------------------------
-    def transform_input():
-        nmf_model, scaler, columns = load(full_path)
+    # --- Transformation function (Unlimited Loop) ---
+    def transform_loop():
+        nonlocal nmf_model, scaler, feature_columns, encoders
+        
+        if nmf_model is None:
+            try:
+                # Load all four components
+                nmf_model, scaler, feature_columns, encoders = load(full_path)
+            except Exception as e:
+                print(f"[FATAL ERROR] Failed to load model for transformation. Check the .pkl file: {e}", file=sys.stderr)
+                return
 
-        X_new = []
-        print("\nEnter values for the following columns:")
-        for col in columns:
-            val = float(input(f"{col}: "))
-            X_new.append(val)
+        print("\n" + "="*70)
+        print(f"ENTER FEATURE VALUES FOR DIMENSIONALITY REDUCTION (N={nmf_model.n_components} components)")
+        print("Type 'exit' or 'quit' to close the program.")
+        print("="*70)
 
-        X_scaled = scaler.transform([X_new])
-        reduced = nmf_model.transform(X_scaled)
+        # FIX 5: Converted to unlimited prediction loop
+        while True:
+            user_vals = []
+            print("\n" + "-"*30)
+            
+            should_exit = False
+            for col in feature_columns:
+                while True:
+                    try:
+                        val = input(f"Enter value for **{col}**: ")
+                        input_val_str = str(val).strip()
 
-        print("\nNMF Reduced Representation:")
-        print(reduced[0])
+                        if input_val_str.lower() in ['exit', 'quit']:
+                            should_exit = True
+                            break
 
-    return transform_input
+                        if col in encoders:
+                            # Use saved encoder for categorical columns
+                            le = encoders[col]
+                            try:
+                                # Transform the categorical value
+                                encoded_val = le.transform([input_val_str])[0]
+                                user_vals.append(encoded_val)
+                                break
+                            except ValueError:
+                                known_classes = list(le.classes_)
+                                if len(known_classes) > 10:
+                                    known_classes = known_classes[:10] + ["..."]
+                                print(f"[ERROR] Value '{input_val_str}' for column '{col}' is not a known category. Known examples: {known_classes}")
+                                continue
+                        else:
+                            # For numeric columns
+                            user_vals.append(float(val))
+                            break
+                    except ValueError:
+                        print(f"[ERROR] Invalid number format for column '{col}'. Please enter a numeric value.")
+                        continue
+                
+                if should_exit:
+                    break
+            
+            if should_exit:
+                print("\n**[INFO] Transformation mode terminated by user.**")
+                break
+
+            # Convert list to DataFrame
+            df_input = pd.DataFrame([user_vals], columns=feature_columns)
+            
+            # FIX: Scale the input using the saved scaler (resolves UserWarning)
+            user_scaled = scaler.transform(df_input) 
+
+            # Transform the scaled input using the NMF model
+            reduced = nmf_model.transform(user_scaled)
+            
+            print("\n" + "="*30)
+            print(f"**[RESULT] Reduced Vector ({nmf_model.n_components}D):**")
+            print(reduced[0]) 
+            print("="*30)
+
+    return transform_loop
 
 
 if __name__ == "__main__":
-    predict_func = train_and_save_nmf(
-        dataset_path=sys.argv[1],
-        n_components=int(sys.argv[2]),
-        pkl_filename=sys.argv[3],
-    )
-    predict_func()
+    # FIX 4: Updated CLI checks to match the deployment standard structure
+    if len(sys.argv) < 2 or len(sys.argv) > 4:
+        print("Usage (Train/Transform): python script_name.py <dataset_path> <n_components> <pkl_filename>")
+        print("Usage (Transform Only): python script_name.py <pkl_filename> transform_only")
+        sys.exit(1)
+        
+    if len(sys.argv) == 4:
+        # Standard Training and Transformation
+        dataset_path = sys.argv[1]
+        pkl_filename = sys.argv[3]
+        
+        try:
+            n_components = int(sys.argv[2])
+        except ValueError:
+            print("[FATAL ERROR] n_components must be an integer.", file=sys.stderr)
+            sys.exit(1)
+            
+        try:
+            transform_func = train_and_save_nmf(dataset_path, n_components, pkl_filename)
+            transform_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+            
+    elif len(sys.argv) == 3 and sys.argv[2].lower() == 'transform_only':
+        # Transform Only Mode
+        pkl_filename = sys.argv[1]
+        
+        try:
+            # Use dummy n_components (0) as it's only needed for training mode
+            transform_func = train_and_save_nmf(None, 0, pkl_filename) 
+            transform_func()
+        except Exception as e:
+            print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    else:
+        print("\n[FATAL ERROR] Invalid number of arguments provided.")
+        sys.exit(1)
