@@ -8,11 +8,10 @@ from pathlib import Path
 
 # --- GLOBAL CONFIGURATION AND SCHEMA ---
 
-# Resolve project-rooted paths (works cross-platform)
-BASE_DIR = Path(__file__).resolve().parent.parent
-ML_LIBRARY_ROOT = BASE_DIR / "ML_BOT" / "ML_Library"
-TRAINED_MODELS_DIR = BASE_DIR / "Trained_Models"
-SAMPLE_DATASET_PATH = BASE_DIR / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv"
+# Your specific paths
+ML_LIBRARY_ROOT = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\ML_Library"
+TRAINED_MODELS_DIR = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\Trained_Models"
+HARDCODED_DATASET_PATH = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\Sample_Datasets\Mall_Customers.csv" 
 
 # Model Schema: Mapping problem types to EXACT CamelCase script names
 MODEL_SCHEMA = {
@@ -177,12 +176,7 @@ import sys
 from pathlib import Path
 import os # Ensure os is imported for os.devnull if needed, though stdout=None usually suffices
 
-def execute_model_script(script_path: str,
-                         data_filepath: str,
-                         target_col: str | None,
-                         model_output_dir: str,
-                         auto_exit: bool = False,
-                         timeout: int = 300):
+def execute_model_script(script_path: str, data_filepath: str, target_col: str | None, model_output_dir: str):
     """
     Executes the model script using subprocess.run with inherited I/O.
     This allows the child script to run its training and then enter its 
@@ -221,140 +215,95 @@ def execute_model_script(script_path: str,
     
     print(f"Command: {' '.join(command)}")
 
-    # 3. Execute the command
+    # 3. Execute the command and allow full user interaction
     try:
-        # If auto_exit=True, we capture output and send "exit" to skip the prediction loop.
-        if auto_exit:
-            result = subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                input="exit\n",
-                timeout=timeout
-            )
-            print("\n✅ Model script exited successfully.")
-            print(f"Model saved to: {pkl_full_path}")
-            return {
-                "pkl_path": pkl_full_path,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "returncode": result.returncode,
-            }
-        else:
-            # Interactive mode: inherit stdio so user can type into the prediction loop.
-            result = subprocess.run(
-                command,
-                check=True,
-                text=True
-            )
-            return {
-                "pkl_path": pkl_full_path,
-                "stdout": "",
-                "stderr": "",
-                "returncode": result.returncode,
-            }
+        # Use subprocess.run and let stdout/stderr/stdin be inherited (the default).
+        # We explicitly set check=True to raise an error if the process fails.
+        result = subprocess.run(
+            command,
+            check=True,
+            # IMPORTANT: We do NOT use capture_output=True or pipe stdin/stdout.
+            # This ensures the child process's I/O is directed to the user's terminal.
+            text=True 
+        )
+        
+        # If the script finishes without error, it means the user manually exited the prediction loop.
+        
+        print("\n✅ Model script exited successfully after user input.")
+        print(f"Model saved to: {pkl_full_path}")
         
     except subprocess.CalledProcessError as e:
+        # This catches errors if the child script crashes during training or prediction.
         print(f"❌ Error during script execution (Return Code {e.returncode})")
-        return {
-            "pkl_path": pkl_full_path,
-            "stdout": e.stdout if auto_exit else "",
-            "stderr": e.stderr if auto_exit else "",
-            "returncode": e.returncode,
-        }
-    except subprocess.TimeoutExpired as e:
-        print("❌ Error: Script execution timed out.")
-        return {
-            "pkl_path": pkl_full_path,
-            "stdout": e.stdout if auto_exit else "",
-            "stderr": e.stderr if auto_exit else "",
-            "returncode": -1,
-        }
+        print("Please check the terminal output for the script's internal error messages.")
     except FileNotFoundError:
         print("❌ Error: Python executable or script not found. Check paths.")
-        return {
-            "pkl_path": pkl_full_path,
-            "stdout": "",
-            "stderr": "Python executable or script not found.",
-            "returncode": -1,
-        }
         
 # --- 6. MAIN ORCHESTRATOR FUNCTION ---
 
-def orchestrate_ml_pipeline(dataset_path: str,
-                            target_column: str | None,
-                            user_context: str,
-                            train: bool = False,
-                            auto_exit: bool = True) -> dict:
-    """
-    Non-interactive orchestrator used by both CLI and UI.
-    Returns a dictionary with suggestion details and (optionally) training output.
-    """
-    results: dict[str, str | dict | None] = {
-        "dataset_path": dataset_path,
-        "target_column": target_column,
-        "context": user_context
-    }
-
-    df = read_dataset(dataset_path)
-    if df is None:
-        raise ValueError("Dataset could not be loaded.")
-
-    file_name = Path(dataset_path).name
-    stats_string = generate_stats(df)
-    results["stats"] = stats_string
-
-    llm_result = get_model_suggestion_from_llama3(stats_string, file_name, target_column or "", user_context)
-    if llm_result is None:
-        raise RuntimeError("LLM suggestion failed.")
-
-    problem_type = llm_result.get('problem_type')
-    suggested_model = llm_result.get('suggested_model')
-    results["suggestion"] = llm_result
-
-    model_script_name = f"{suggested_model}.py"
+def orchestrate_ml_pipeline():
+    """Orchestrates the entire ML discovery and training pipeline."""
     
-    script_path = find_model_script(
-        library_path=str(ML_LIBRARY_ROOT),
-        problem_type=problem_type,
-        script_filename=model_script_name
-    )
-    results["script_path"] = script_path
-
-    if train and script_path:
-        train_result = execute_model_script(
-            script_path=script_path,
-            data_filepath=dataset_path,
-            target_col=target_column,
-            model_output_dir=str(TRAINED_MODELS_DIR),
-            auto_exit=auto_exit
-        )
-        results["train_result"] = train_result
-
-    return results
-
-
-def _run_cli():
-    """
-    Simple CLI entrypoint preserving the previous behavior while allowing overrides.
-    """
+    # 1. Interactive Input
     print("="*50)
-    print("✨ ML Model Orchestration Pipeline (CLI) ✨")
+    print("✨ ML Model Orchestration Pipeline ✨")
+    print(f"Dataset Filepath: {HARDCODED_DATASET_PATH}")
     print("="*50)
-
-    dataset_path = input(f"Dataset Filepath (default: {SAMPLE_DATASET_PATH}): ").strip() or str(SAMPLE_DATASET_PATH)
-    target_column = input("Enter the TARGET COLUMN name (or leave blank if unsupervised): ").strip() or None
+    
+    target_column = input(f"Enter the TARGET COLUMN name (or leave blank if unsupervised): ").strip() or None
     user_context = input("Enter your CONTEXT/GOAL for this dataset (e.g., 'Predict survival'): ").strip()
     if not user_context:
         user_context = "Analyze the data and suggest a fitting ML task."
 
-    try:
-        results = orchestrate_ml_pipeline(dataset_path, target_column, user_context, train=True, auto_exit=True)
-        print(json.dumps(results.get("suggestion", {}), indent=2))
-    except Exception as e:
-        print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
-        sys.exit(1)
+    dataset_path = HARDCODED_DATASET_PATH
+    
+    print("\n--- Starting Data Analysis ---")
+    
+    df = read_dataset(dataset_path)
+    if df is None:
+        return
+
+    file_name = Path(dataset_path).name
+    stats_string = generate_stats(df)
+    print("The Calculated stats are: ", stats_string)
+    
+    llm_result = get_model_suggestion_from_llama3(stats_string, file_name, target_column, user_context)
+    
+    if llm_result is None:
+        print("Pipeline aborted due to LLM error.")
+        return
+
+    problem_type = llm_result.get('problem_type')
+    suggested_model = llm_result.get('suggested_model')
+    
+    print("\n" + "="*50)
+    print(f"🤖 LLM Problem Assessment")
+    print("="*50)
+    print(f"  Problem Type: **{problem_type}**")
+    print(f"  Suggested Model: **{suggested_model}**")
+    print(f"  Reasoning: {llm_result.get('reasoning')}")
+    print(f"  Unnecessary Columns: {llm_result.get('unnecesarry_column_in_the_dataset')}")
+    print("="*50 + "\n")
+
+    # 6. Find the model script (Uses the exact name from LLM)
+    model_script_name = f"{suggested_model}.py"
+    
+    script_path = find_model_script(
+        library_path=ML_LIBRARY_ROOT,
+        problem_type=problem_type,
+        script_filename=model_script_name
+    )
+
+    if script_path:
+        # 7. Train the model
+        execute_model_script(
+            script_path=script_path,
+            data_filepath=dataset_path,
+            target_col=target_column,
+            model_output_dir=TRAINED_MODELS_DIR
+        )
+    
+    print("\n✨ ML Orchestration Pipeline Complete. Check the Trained_Models directory! ✨")
 
 
 # --- 7. EXECUTION BLOCK (Final, Corrected) ---
@@ -370,10 +319,11 @@ if __name__ == "__main__":
         
     # Check 2: tabulate (Corrected check for 'tabulate' dependency)
     try:
+        # Check using a minimal, non-empty DataFrame to avoid the "Cannot describe" ValueError
         pd.DataFrame({'A': [1]}).describe().to_markdown() 
     except ImportError:
         print("FATAL ERROR: The 'tabulate' library is missing (required by pandas.to_markdown()).")
         print("Please install it using: pip install tabulate")
         sys.exit(1)
 
-    _run_cli()
+    orchestrate_ml_pipeline()
