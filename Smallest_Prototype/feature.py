@@ -221,41 +221,54 @@ def execute_model_script(script_path: str,
     
     print(f"Command: {' '.join(command)}")
 
-    # 3. Execute the command (optionally auto-exiting prediction loop)
+    # 3. Execute the command
     try:
-        input_payload = "exit\n" if auto_exit else None
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            input=input_payload,
-            timeout=timeout
-        )
-
-        print("\n✅ Model script exited successfully.")
-        print(f"Model saved to: {pkl_full_path}")
-        return {
-            "pkl_path": pkl_full_path,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode,
-        }
+        # If auto_exit=True, we capture output and send "exit" to skip the prediction loop.
+        if auto_exit:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                input="exit\n",
+                timeout=timeout
+            )
+            print("\n✅ Model script exited successfully.")
+            print(f"Model saved to: {pkl_full_path}")
+            return {
+                "pkl_path": pkl_full_path,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        else:
+            # Interactive mode: inherit stdio so user can type into the prediction loop.
+            result = subprocess.run(
+                command,
+                check=True,
+                text=True
+            )
+            return {
+                "pkl_path": pkl_full_path,
+                "stdout": "",
+                "stderr": "",
+                "returncode": result.returncode,
+            }
         
     except subprocess.CalledProcessError as e:
         print(f"❌ Error during script execution (Return Code {e.returncode})")
         return {
             "pkl_path": pkl_full_path,
-            "stdout": e.stdout,
-            "stderr": e.stderr,
+            "stdout": e.stdout if auto_exit else "",
+            "stderr": e.stderr if auto_exit else "",
             "returncode": e.returncode,
         }
     except subprocess.TimeoutExpired as e:
         print("❌ Error: Script execution timed out.")
         return {
             "pkl_path": pkl_full_path,
-            "stdout": e.stdout,
-            "stderr": e.stderr,
+            "stdout": e.stdout if auto_exit else "",
+            "stderr": e.stderr if auto_exit else "",
             "returncode": -1,
         }
     except FileNotFoundError:
