@@ -73,10 +73,10 @@ def get_target_and_context(df):
     print(f"Context: {context if context else 'No context provided.'} \n")
 
     return target_column, context
-filepath = "ML_BOT\Sample_Datasets\diabetes.csv"
-file_name = extract_filename(r"ML_BOT\Sample_Datasets\diabetes.csv")
+filepath = "ML_BOT\Sample_Datasets\Mall_Customers.csv"
+file_name = extract_filename(r"ML_BOT\Sample_Datasets\Mall_Customers.csv")
 #loading the file into the dataframe
-df = load_file(r"ML_BOT\Sample_Datasets\diabetes.csv")
+df = load_file(r"ML_BOT\Sample_Datasets\Mall_Customers.csv")
 
 target_column, context = get_target_and_context(df)
 
@@ -99,7 +99,7 @@ Output only the Python code.
 ---
 
 USER INPUTS
-- Dataset path: `{file_name}`
+- Dataset path: `{filepath}`
 - Target column: `{target_column}`
 - Model name: `{model}` (from scikit-learn)
 
@@ -111,7 +111,7 @@ SCRIPT REQUIREMENTS
    - pandas, scikit-learn (train_test_split, model import), joblib, numpy.
 
 2. Load dataset
-   - Load the dataset from `{file_name}` using pandas.
+   - Load the dataset from `{filepath}` using pandas.
    - Separate the target column `{target_column}` as y.
    - Use the remaining columns as X.
 
@@ -143,6 +143,48 @@ SCRIPT REQUIREMENTS
 Output only the complete Python code, enclosed in:
 ```python
  (the script)```
+ 
+ the example script if you want to follow: 
+ import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier
+from joblib import dump, load
+import numpy as np
+import os
+
+data = pd.read_csv('ML_BOT/Sample_Datasets/diabetes.csv')
+y = data['Outcome']
+X = data.drop('Outcome', axis=1)
+
+X.fillna(X.mean(), inplace=True)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X.to_numpy())
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+model = DecisionTreeClassifier()
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+print(f'Training completion: model.score(X_test, y_test)')
+
+dump_dir = 'models'
+dump_filename = 'Trained_Decision_Tree_Classifier.pkl'
+
+if not os.path.exists(dump_dir):
+    os.makedirs(dump_dir)
+
+dump(model, os.path.join(dump_dir, dump_filename))
+
+while True:
+    features = []
+    for col in X.columns:
+        val = float(input(f'Enter value for column col: '))
+        features.append(val)
+    features = np.array([features]).reshape(1, -1)  # Add this line
+    pred = model.predict(features)
+    print(f'Predicted outcome: pred[0]')
 
 """
 raw_text = generate_script_content(model, prompt_template)
