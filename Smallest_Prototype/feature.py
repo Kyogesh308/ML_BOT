@@ -21,6 +21,8 @@ def get_env(key: str, default=None):
 ML_LIBRARY_ROOT = BASE_DIR / "ML_BOT" / "ML_Library"
 TRAINED_MODELS_DIR = BASE_DIR / "Trained_Models"
 SAMPLE_DATASET_PATH = BASE_DIR / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv"
+# Default to widely available Gemini model; override via .env (GEMINI_MODEL=models/gemini-pro, models/gemini-1.5-flash, etc.)
+GEMINI_MODEL = get_env("GEMINI_MODEL", "models/gemini-pro")
 
 # Model Schema: Mapping problem types to EXACT CamelCase script names
 MODEL_SCHEMA = {
@@ -134,10 +136,10 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
     {json_schema}
     """
     
-    print("\n--- 🤖 Sending Analysis to Gemini... ---")
+    print(f"\n--- 🤖 Sending Analysis to Gemini ({GEMINI_MODEL})... ---")
     
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel(GEMINI_MODEL)
         response = model.generate_content(prompt)
         json_str = response.text
         print(f"✅ Gemini response received.")
