@@ -21,7 +21,7 @@ def get_env(key: str, default=None):
 ML_LIBRARY_ROOT = BASE_DIR / "ML_BOT" / "ML_Library"
 TRAINED_MODELS_DIR = BASE_DIR / "Trained_Models"
 SAMPLE_DATASET_PATH = BASE_DIR / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv"
-# Default to widely available Gemini model; override via .env (GEMINI_MODEL=models/gemini-pro, models/gemini-1.5-flash, etc.)
+# Default to a set of widely available Gemini models; override via .env (GEMINI_MODEL=models/gemini-pro, models/gemini-1.5-flash, etc.)
 GEMINI_MODEL = get_env("GEMINI_MODEL", "models/gemini-pro")
 
 # Model Schema: Mapping problem types to EXACT CamelCase script names
@@ -81,6 +81,30 @@ def generate_stats(df: pd.DataFrame) -> str:
 
 # --- 3. LLM INTERACTION (Using Gemini) ---
 
+def _pick_gemini_model(genai) -> str | None:
+    """Choose a Gemini model, trying env override first, then safe fallbacks."""
+    candidates = []
+    if GEMINI_MODEL:
+        candidates.append(GEMINI_MODEL)
+    candidates.extend([
+        "models/gemini-1.5-flash-latest",
+        "models/gemini-1.5-pro-latest",
+        "models/gemini-1.5-flash",
+        "models/gemini-pro",
+    ])
+
+    seen = set()
+    for name in candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            genai.GenerativeModel(name)  # probe for availability
+            return name
+        except Exception:
+            continue
+    return None
+
 def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str, context: str) -> dict | None: 
     """
     Calls Gemini via google-generativeai, constraining the 'suggested_model' field to CamelCase names.
@@ -96,6 +120,11 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
         print("❌ GEMINI_API_KEY is not set in .env.")
         return None
     genai.configure(api_key=api_key)
+
+    model_name = _pick_gemini_model(genai)
+    if not model_name:
+        print("❌ No usable Gemini model found. Try setting GEMINI_MODEL in .env (e.g., models/gemini-1.5-flash-latest).")
+        return None
     
     # Generate the model lists for the prompt
     classification_models = ', '.join(MODEL_SCHEMA['Classification'])
@@ -136,10 +165,10 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
     {json_schema}
     """
     
-    print(f"\n--- 🤖 Sending Analysis to Gemini ({GEMINI_MODEL})... ---")
+    print(f"\n--- 🤖 Sending Analysis to Gemini ({model_name})... ---")
     
     try:
-        model = genai.GenerativeModel(GEMINI_MODEL)
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         json_str = response.text
         print(f"✅ Gemini response received.")
