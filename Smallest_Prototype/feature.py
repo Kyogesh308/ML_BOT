@@ -6,6 +6,7 @@ import sys
 from io import StringIO
 from pathlib import Path
 
+import requests
 from dotenv import dotenv_values
 
 # --- GLOBAL CONFIGURATION AND SCHEMA ---
@@ -16,7 +17,10 @@ ENV = dotenv_values(BASE_DIR / ".env")
 
 def get_env(key: str, default=None):
     val = ENV.get(key)
-    return val if val not in (None, "") else default
+    if val is None:
+        return default
+    cleaned = val.strip().strip('"').strip("'")
+    return cleaned if cleaned else default
 
 ML_LIBRARY_ROOT = BASE_DIR / "ML_BOT" / "ML_Library"
 TRAINED_MODELS_DIR = BASE_DIR / "Trained_Models"
@@ -79,60 +83,68 @@ def generate_stats(df: pd.DataFrame) -> str:
     stats_output.write(df.isnull().sum().to_markdown(numalign="left", stralign="left"))
     return stats_output.getvalue()
 
-# --- 3. LLM INTERACTION (Using Gemini) ---
+# --- 3. LLM INTERACTION (Using Gemini REST) ---
 
-def _pick_gemini_model(genai) -> str | None:
-    """Choose a Gemini model, trying env override first, then safe fallbacks."""
+def _pick_gemini_models() -> list[str]:
+    """Return candidate Gemini model names to try."""
     candidates = []
     if GEMINI_MODEL:
         candidates.append(GEMINI_MODEL)
     candidates.extend([
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-pro-latest",
-        "models/gemini-1.5-flash",
-        "models/gemini-pro",
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro",
+        "models/gemini-flash-latest",
+        "models/gemini-pro-latest",
+        "models/gemini-2.0-pro-exp",
+        "models/gemini-2.0-flash",
     ])
-
-    seen = set()
+    seen: set[str] = set()
+    deduped: list[str] = []
     for name in candidates:
-        if name in seen:
-            continue
-        seen.add(name)
-        try:
-            genai.GenerativeModel(name)  # probe for availability
-            return name
-        except Exception:
-            continue
-    return None
+        if name not in seen:
+            seen.add(name)
+            deduped.append(name)
+    return deduped
+
+
+def _call_gemini_rest(model_name: str, prompt: str, api_key: str) -> str | None:
+    url = f"https://generativelanguage.googleapis.com/v1/{model_name}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt}]}
+        ]
+    }
+    params = {"key": api_key}
+    resp = requests.post(url, headers=headers, params=params, json=payload, timeout=60)
+    if resp.status_code != 200:
+        print(f"Gemini HTTP {resp.status_code} for model {model_name}: {resp.text[:200]}")
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    data = resp.json()
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts)
+    except Exception:
+        return None
+
 
 def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str, context: str) -> dict | None: 
     """
-    Calls Gemini via google-generativeai, constraining the 'suggested_model' field to CamelCase names.
+    Calls Gemini via REST, constraining the 'suggested_model' field to CamelCase names.
     """
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        print("❌ google-generativeai library not found. Please run 'pip install google-generativeai'.")
-        return None
-
     api_key = get_env("GEMINI_API_KEY")
     if not api_key:
         print("❌ GEMINI_API_KEY is not set in .env.")
         return None
-    genai.configure(api_key=api_key)
 
-    model_name = _pick_gemini_model(genai)
-    if not model_name:
-        print("❌ No usable Gemini model found. Try setting GEMINI_MODEL in .env (e.g., models/gemini-1.5-flash-latest).")
-        return None
-    
     # Generate the model lists for the prompt
     classification_models = ', '.join(MODEL_SCHEMA['Classification'])
     regression_models = ', '.join(MODEL_SCHEMA['Regression'])
     clustering_models = ', '.join(MODEL_SCHEMA['Clustering'])
     dr_models = ', '.join(MODEL_SCHEMA['DimensionalityReduction'])
     
-    # Define the required JSON schema as a string for the prompt
     json_schema = """
     {
         "problem_type": "Classification" | "Regression" | "Clustering" | "DimensionalityReduction",
@@ -164,21 +176,47 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
     JSON SCHEMA:
     {json_schema}
     """
-    
-    print(f"\n--- 🤖 Sending Analysis to Gemini ({model_name})... ---")
-    
-    try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
-        json_str = response.text
-        print(f"✅ Gemini response received.")
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        snippet = json_str[:200] if 'json_str' in locals() else ''
-        print(f"❌ JSON Decode Error: Gemini did not return valid JSON. Start of response: {snippet}")
+
+    candidates = _pick_gemini_models()
+    llm_output = None
+    for model_name in candidates:
+        print(f"\n--- 🤖 Sending Analysis to Gemini ({model_name})... ---")
+        try:
+            llm_output = _call_gemini_rest(model_name, prompt, api_key)
+            if llm_output:
+                model_name_used = model_name
+                break
+            else:
+                print(f"Model {model_name} returned no output or 404; trying next.")
+        except requests.HTTPError as http_err:
+            status = http_err.response.status_code if http_err.response is not None else "unknown"
+            body = http_err.response.text if http_err.response is not None else ""
+            print(f"HTTP error from Gemini for model {model_name}: {status} | {body}")
+            if status == 404:
+                continue
+            return None
+        except Exception as e:
+            print(f"Error calling Gemini model {model_name}: {e}")
+            continue
+
+    if not llm_output:
+        print("❌ No Gemini model responded successfully. Set GEMINI_MODEL in .env to a working model (e.g., models/gemini-1.5-flash-latest).")
         return None
-    except Exception as e:
-        print(f"❌ An unexpected error occurred during LLM call: {e}")
+
+    try:
+        cleaned = llm_output.strip()
+        if cleaned.startswith("```"):
+            for fence in ("```json", "```JSON", "```"):
+                if cleaned.lower().startswith(fence):
+                    cleaned = cleaned[len(fence):].strip()
+                    break
+            if cleaned.endswith("```"):
+                cleaned = cleaned[: cleaned.rfind("```")].strip()
+        print(f"✅ Gemini response received from {model_name_used}.")
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        snippet = cleaned[:200] if llm_output else ''
+        print(f"❌ JSON Decode Error: Gemini did not return valid JSON. Start of response: {snippet}")
         return None
 
 # --- 4. MODEL SEARCH FUNCTION ---
@@ -375,14 +413,23 @@ def _run_cli():
     print("✨ ML Model Orchestration Pipeline (CLI) ✨")
     print("="*50)
 
-    dataset_path = input(f"Dataset Filepath (default: {SAMPLE_DATASET_PATH}): ").strip() or str(SAMPLE_DATASET_PATH)
-    target_column = input("Enter the TARGET COLUMN name (or leave blank if unsupervised): ").strip() or None
-    user_context = input("Enter your CONTEXT/GOAL for this dataset (e.g., 'Predict survival'): ").strip()
+    try:
+        dataset_path = input(f"Dataset Filepath (default: {SAMPLE_DATASET_PATH}): ").strip() or str(SAMPLE_DATASET_PATH)
+    except EOFError:
+        dataset_path = str(SAMPLE_DATASET_PATH)
+    try:
+        target_column = input("Enter the TARGET COLUMN name (or leave blank if unsupervised): ").strip() or None
+    except EOFError:
+        target_column = None
+    try:
+        user_context = input("Enter your CONTEXT/GOAL for this dataset (e.g., 'Predict survival'): ").strip()
+    except EOFError:
+        user_context = "Analyze the data and suggest a fitting ML task."
     if not user_context:
         user_context = "Analyze the data and suggest a fitting ML task."
 
     try:
-        results = orchestrate_ml_pipeline(dataset_path, target_column, user_context, train=True, auto_exit=True)
+        results = orchestrate_ml_pipeline(dataset_path, target_column, user_context, train=False, auto_exit=True)
         print(json.dumps(results.get("suggestion", {}), indent=2))
     except Exception as e:
         print(f"\n[FATAL ERROR] An unexpected error occurred: {e}", file=sys.stderr)
@@ -392,15 +439,7 @@ def _run_cli():
 # --- 7. EXECUTION BLOCK (Final, Corrected) ---
 
 if __name__ == "__main__":
-    # Check 1: google-generativeai
-    try:
-        import google.generativeai  # noqa: F401
-    except ImportError:
-        print("FATAL ERROR: The 'google-generativeai' library is not installed.")
-        print("Please install it using: pip install google-generativeai")
-        sys.exit(1)
-        
-    # Check 2: tabulate (Corrected check for 'tabulate' dependency)
+    # Check for tabulate dependency
     try:
         pd.DataFrame({'A': [1]}).describe().to_markdown() 
     except ImportError:

@@ -14,7 +14,7 @@ st.title("ML Bot • Dataset → Model Suggestion → (Optional) Train")
 
 st.markdown(
     "Upload a dataset, provide context and the target column (or leave blank for unsupervised), "
-    "and run the pipeline. Training uses your local Ollama + sklearn scripts."
+    "and run the pipeline. Suggestions use Gemini; training uses your local sklearn scripts."
 )
 
 uploaded_file = st.file_uploader(
@@ -54,6 +54,9 @@ def _persist_upload(file) -> Path:
 if run_btn:
     dataset_path: Path | None = None
 
+    if run_training and not auto_exit:
+        st.warning("Interactive prediction loops are terminal-only. Auto-exit has been enabled for this run.")
+        auto_exit = True
     if uploaded_file:
         dataset_path = _persist_upload(uploaded_file)
     elif use_sample:
