@@ -88,19 +88,25 @@ def generate_stats(df: pd.DataFrame) -> str:
     stats_output.write(df.isnull().sum().to_markdown(numalign="left", stralign="left"))
     return stats_output.getvalue()
 
-# --- 3. LLM INTERACTION (Using Ollama) ---
+# --- 3. LLM INTERACTION (Using Gemini) ---
 
 def get_model_suggestion_from_llama3(
     stats: str, filename: str, target_col: str, context: str
 ) -> dict | None:
     """
-    Calls Llama 3 via Ollama, constraining the 'suggested_model' field to CamelCase names.
+    Calls Gemini (hosted) and expects JSON back for problem/model suggestion.
     """
     try:
-        import ollama
+        import google.generativeai as genai
     except ImportError:
-        print("❌ Ollama library not found. Please run 'pip install ollama'.")
+        print("❌ google-generativeai library not found. Please run 'pip install google-generativeai'.")
         return None
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("❌ GEMINI_API_KEY is not set. Please add it to your environment.")
+        return None
+    genai.configure(api_key=api_key)
     
     # Generate the model lists for the prompt
     classification_models = ", ".join(MODEL_SCHEMA["Classification"])
@@ -143,28 +149,20 @@ def get_model_suggestion_from_llama3(
     """
     # --- END OF UPDATED PROMPT ---
     
-    print("\n--- 🤖 Sending Analysis to Llama 3 via Ollama... ---")
+    print("\n--- 🤖 Sending Analysis to Gemini... ---")
     
     try:
-        response = ollama.generate(
-            model="llama3", prompt=prompt, format="json", options={"temperature": 0.0}
-        )
-        
-        json_str = response['response']
-        print(f"✅ Ollama response received.")
-        
-        return json.loads(json_str)
-
-    except ollama.OllamaAPIError as e:
-        print("❌ Ollama API Error: Ensure 'llama3' is pulled (ollama pull llama3) and the server is running.")
-        print(e)
-        return None
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        raw_text = response.text
+        print("✅ Gemini response received.")
+        return json.loads(raw_text)
     except json.JSONDecodeError:
-        print(f"❌ JSON Decode Error: Llama 3 did not return valid JSON. Check the raw output for errors.")
-        print(f"Raw response (first 200 chars): {json_str[:200]}...")
+        snippet = raw_text[:200] if "raw_text" in locals() else ""
+        print(f"❌ JSON Decode Error: Gemini did not return valid JSON. Raw start: {snippet}...")
         return None
     except Exception as e:
-        print(f"❌ An unexpected error occurred during LLM call: {e}")
+        print(f"❌ An unexpected error occurred during Gemini call: {e}")
         return None
 
 # --- 4. MODEL SEARCH FUNCTION ---

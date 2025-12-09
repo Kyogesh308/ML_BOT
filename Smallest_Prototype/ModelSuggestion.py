@@ -1,7 +1,7 @@
 import json
-import ollama
 import os
 import io
+import google.generativeai as genai
 import pandas as pd
 import sys
 
@@ -36,7 +36,7 @@ def model_suggestion(filename, dataset: pd.DataFrame, target, context):
     print("\nAll the dataset stats are calculated")
 
     print(f"\nProblem Type Detected (Heuristic): {problem_type}")
-    print("Moving towards ollama to suggest a model.")
+    print("Moving towards Gemini to suggest a model.")
 
     # --- Enforce JSON structure and determinism ---
     prompt = f"""The AutoML Prompt
@@ -70,25 +70,25 @@ def model_suggestion(filename, dataset: pd.DataFrame, target, context):
     "unncesarry_column_in_the_dataset": "string"
     }}"""
 
-    response = " "
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY is not set.")
+        sys.exit(1)
+
+    genai.configure(api_key=api_key)
+
     try:
-        response = ollama.generate(
-            model='llama3', 
-            prompt=prompt,
-            format="json",
-            options={'temperature': 0.0} # FIX 1: Enforce Determinism
-        )
-        
-        llm_output = response.get("response", "").strip()
-        print("Ollama's raw response received.")
-        
+        model_gen = genai.GenerativeModel("gemini-1.5-flash")
+        resp_obj = model_gen.generate_content(prompt)
+        llm_output = (resp_obj.text or "").strip()
+        print("Gemini raw response received.")
     except Exception as e:
         print(f"An error occurred: {e}")
         sys.exit(1)
 
     model = ""
     problem_type_llm = ""
-    print("\nOllama's response: ")
+    print("\nGemini response: ")
 
     try:
         # FIX 2: Handle malformed JSON and missing keys gracefully

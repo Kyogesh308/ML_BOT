@@ -1,39 +1,38 @@
 import sys
 import subprocess
-import ollama
+import os
+import google.generativeai as genai
 from subprocess import Popen, PIPE
 
-OLLAMA_MODEL = "llama3"
+GEMINI_MODEL = "gemini-1.5-flash"
 
 def generate_script_content(model: str, prompt_template: str) -> str:
     """
-    Calls Ollama to generate a Python script based on the provided model and prompt template.
+    Calls Gemini to generate a Python script based on the provided model and prompt template.
     """
-    print(f"1. Calling Ollama client with model '{model}' to generate script...")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY is not set.")
+        sys.exit(1)
+    genai.configure(api_key=api_key)
+
+    print(f"1. Calling Gemini client with model '{GEMINI_MODEL}' to generate script...")
 
     refined_prompt = f"ONLY output the complete, clean, executable Python code, with no explanations, markdown, or extra text. {prompt_template}"
 
     try:
-        client = ollama.Client()
-        response = client.generate(
-            model=OLLAMA_MODEL,
-            prompt=refined_prompt,
-            options={'temperature': 0.0}
-        )
-        raw_text = response['response'].strip()
-        print("   Ollama output received via Python client.")
+        client = genai.GenerativeModel(GEMINI_MODEL)
+        response = client.generate_content(refined_prompt)
+        raw_text = (response.text or "").strip()
+        print("   Gemini output received via client.")
         return raw_text
-    except ollama.OllamaAPIError as e:
-        print(f"\nError: Ollama API call failed. Is Ollama running and is the model '{model}' downloaded?")
-        print(f"  Details: {e}")
-        sys.exit(1)
     except Exception as e:
-        print(f"\nAn unexpected error occurred during Ollama generation: {e}")
+        print(f"\nAn unexpected error occurred during Gemini generation: {e}")
         sys.exit(1)
 
 def extract_code_block(raw_text: str) -> str:
     """
-    Strips markdown fences from Ollama's output and returns clean Python code.
+    Strips markdown fences from LLM output and returns clean Python code.
     """
     
     code_content = raw_text.strip()

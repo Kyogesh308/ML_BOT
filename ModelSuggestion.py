@@ -1,8 +1,7 @@
 import json
-from queue import Full
-import ollama
 import os
 import io
+import google.generativeai as genai
 
 def model_suggestion(filename, dataset, target, context):
     
@@ -23,14 +22,14 @@ def model_suggestion(filename, dataset, target, context):
     print("\nCentral Tendencies, rows, columns, calculated.")
     print("\nAll the dataset stats are calculated")
 
-    print("Moving towards ollama to suggest a model.")
-    print("Ollama's response: ")
+    print("Moving towards Gemini to suggest a model.")
+    print("Gemini's response: ")
     datatype = None
     if target!=None:
         datatype = dataset[target].dtype
     
 
-    #creating a prompt for the ollama model to suggest a model to train the model
+    #creating a prompt for the Gemini model to suggest a model to train the model
     prompt = f"""The AutoML Prompt
     You are an expert AutoML system. Your sole function is to analyze the provided dataset statistics and recommend the optimal machine learning model.
 
@@ -82,17 +81,20 @@ def model_suggestion(filename, dataset, target, context):
     }}"""
 
     response = " "
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY is not set.")
+        return ""
+    genai.configure(api_key=api_key)
+
     try:
-        response = ollama.generate(
-        model='llama3', 
-        prompt=prompt,
-        format="json"
-        )
-        
-        llm_output = response.get("response", "")
+        model_gen = genai.GenerativeModel("gemini-1.5-flash")
+        resp_obj = model_gen.generate_content(prompt)
+        llm_output = resp_obj.text or ""
         print(llm_output, "\n")
     except Exception as e:
         print(f"An error occurred: {e}")
+        return ""
 
     model = ""
 
@@ -106,7 +108,7 @@ def model_suggestion(filename, dataset, target, context):
     except Exception as e:
         print("JSON parsing failed:", e)    
     except json.JSONDecodeError:
-        print("Error: Failed to decode the JSON response from Ollama.")
+        print("Error: Failed to decode the JSON response from Gemini.")
     except KeyError:
         print("Error: The JSON response is missing one of the expected keys.")
     return model

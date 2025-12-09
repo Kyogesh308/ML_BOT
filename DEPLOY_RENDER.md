@@ -4,7 +4,7 @@ This project has two pieces:
 - **API**: `server/index.js` (Node/Express) calls `Smallest_Prototype/feature.py` (Python).
 - **UI**: `client/` (React + Vite) – served as a static site.
 
-> ⚠️ **Ollama limitation:** Render does not support running Ollama models. The Python pipeline currently expects an `ollama` client. To use Render, either (a) point `get_model_suggestion_from_llama3` to a remote LLM API you control, or (b) stub/mock that call. Otherwise the API service will fail when it tries to reach Ollama locally.
+LLM calls use **Google Gemini** via `google-generativeai`. Set `GEMINI_API_KEY` in your Render service.
 
 ## 1) Prep the repo
 Push your code to GitHub. Keep `requirements.txt` (Python) and `server/package.json` (Node).
@@ -26,6 +26,7 @@ Push your code to GitHub. Keep `requirements.txt` (Python) and `server/package.j
 - **Environment Variables**
   - `PYTHON_BIN=python3` (or your chosen Python on Render)
   - `PORT=5001` (Render injects `PORT`; `server/index.js` uses it)
+  - `GEMINI_API_KEY=<your key>` (required for LLM suggestions)
   - Optional overrides for Python paths if your layout differs:
     - `ML_LIBRARY_ROOT` (defaults to `<repo>/ML_BOT/ML_Library`)
     - `TRAINED_MODELS_DIR` (defaults to `<repo>/Trained_Models`)

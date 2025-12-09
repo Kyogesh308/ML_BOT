@@ -58,7 +58,7 @@ export default function App() {
       <div className="glow" />
       <div className="glow glow-2" />
       <header className="hero">
-        <p className="eyebrow">MLBot • Python + Ollama</p>
+        <p className="eyebrow">MLBot • Python + Gemini</p>
         <h1>Drop a dataset, describe it, and get an instant model plan.</h1>
         <p className="lede">
           The MERN wrapper sends your file, context, and target column straight into the Python orchestrator in
