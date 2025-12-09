@@ -1,17 +1,28 @@
-import os
+import argparse
 import json
-import pandas as pd
+import os
 import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
 
+import pandas as pd
+
 # --- GLOBAL CONFIGURATION AND SCHEMA ---
 
-# Your specific paths
-ML_LIBRARY_ROOT = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\ML_Library"
-TRAINED_MODELS_DIR = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\Trained_Models"
-HARDCODED_DATASET_PATH = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\Sample_Datasets\Mall_Customers.csv" 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ML_LIBRARY_ROOT = Path(
+    os.environ.get("ML_LIBRARY_ROOT", REPO_ROOT / "ML_BOT" / "ML_Library")
+).resolve()
+TRAINED_MODELS_DIR = Path(
+    os.environ.get("TRAINED_MODELS_DIR", REPO_ROOT / "Trained_Models")
+).resolve()
+DEFAULT_DATASET_PATH = Path(
+    os.environ.get(
+        "DEFAULT_DATASET_PATH",
+        REPO_ROOT / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv",
+    )
+).resolve()
 
 # Model Schema: Mapping problem types to EXACT CamelCase script names
 MODEL_SCHEMA = {
@@ -35,16 +46,19 @@ MODEL_SCHEMA = {
 
 # --- 2. DATA UTILITY FUNCTIONS ---
 
-def read_dataset(filepath: str) -> pd.DataFrame | None: 
+def read_dataset(filepath: str) -> pd.DataFrame | None:
     """Reads the dataset based on file extension (csv, xlsx, json, txt, tsv)."""
     try:
         file_extension = Path(filepath).suffix.lower()
-        if file_extension == '.csv': df = pd.read_csv(filepath)
-        elif file_extension in ('.xlsx', '.xls'): df = pd.read_excel(filepath)
-        elif file_extension == '.json': df = pd.read_json(filepath)
-        elif file_extension == '.txt' or file_extension == '.tsv':
+        if file_extension == ".csv":
+            df = pd.read_csv(filepath)
+        elif file_extension in (".xlsx", ".xls"):
+            df = pd.read_excel(filepath)
+        elif file_extension == ".json":
+            df = pd.read_json(filepath)
+        elif file_extension == ".txt" or file_extension == ".tsv":
             # Assuming space or tab-separated for txt/tsv
-            df = pd.read_csv(filepath, sep=r'\s+|,', engine='python')
+            df = pd.read_csv(filepath, sep=r"\s+|,", engine="python")
         else:
             print(f"Unsupported file type: {file_extension}")
             return None
@@ -63,14 +77,22 @@ def generate_stats(df: pd.DataFrame) -> str:
     stats_output = StringIO()
     df.info(buf=stats_output)
     stats_output.write("\n--- Descriptive Statistics (All Columns) ---\n")
-    stats_output.write(df.describe(include='all').to_markdown())
+    try:
+        stats_output.write(df.describe(include="all").to_markdown())
+    except ValueError:
+        # Fallback for edge cases like empty frames
+        stats_output.write("No describe() output available.")
+    except ImportError:
+        stats_output.write(df.describe(include="all").to_string())
     stats_output.write("\n\n--- Missing Value Counts ---\n")
     stats_output.write(df.isnull().sum().to_markdown(numalign="left", stralign="left"))
     return stats_output.getvalue()
 
 # --- 3. LLM INTERACTION (Using Ollama) ---
 
-def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str, context: str) -> dict | None: 
+def get_model_suggestion_from_llama3(
+    stats: str, filename: str, target_col: str, context: str
+) -> dict | None:
     """
     Calls Llama 3 via Ollama, constraining the 'suggested_model' field to CamelCase names.
     """
@@ -81,10 +103,10 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
         return None
     
     # Generate the model lists for the prompt
-    classification_models = ', '.join(MODEL_SCHEMA['Classification'])
-    regression_models = ', '.join(MODEL_SCHEMA['Regression'])
-    clustering_models = ', '.join(MODEL_SCHEMA['Clustering'])
-    dr_models = ', '.join(MODEL_SCHEMA['DimensionalityReduction'])
+    classification_models = ", ".join(MODEL_SCHEMA["Classification"])
+    regression_models = ", ".join(MODEL_SCHEMA["Regression"])
+    clustering_models = ", ".join(MODEL_SCHEMA["Clustering"])
+    dr_models = ", ".join(MODEL_SCHEMA["DimensionalityReduction"])
     
     # Define the required JSON schema as a string for the prompt
     json_schema = """
@@ -125,10 +147,7 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
     
     try:
         response = ollama.generate(
-            model='llama3', 
-            prompt=prompt,
-            format="json",
-            options={'temperature': 0.0}
+            model="llama3", prompt=prompt, format="json", options={"temperature": 0.0}
         )
         
         json_str = response['response']
@@ -154,7 +173,7 @@ def find_model_script(library_path, problem_type, script_filename: str) -> str |
     """
     Finds the model script in the ML_Library using problem_type and the model filename.
     """
-    problem_dir_path = os.path.join(library_path, problem_type)
+    problem_dir_path = os.path.join(str(library_path), problem_type)
 
     if not os.path.isdir(problem_dir_path):
         print(f"Error: Problem directory '{problem_dir_path}' not found in library.")
@@ -171,12 +190,7 @@ def find_model_script(library_path, problem_type, script_filename: str) -> str |
 
 # --- 5. MODEL EXECUTION (Using Subprocess) ---
 
-import subprocess 
-import sys 
-from pathlib import Path
-import os # Ensure os is imported for os.devnull if needed, though stdout=None usually suffices
-
-def execute_model_script(script_path: str, data_filepath: str, target_col: str | None, model_output_dir: str):
+def execute_model_script(script_path: str, data_filepath: str, target_col: str | None, model_output_dir: str) -> dict:
     """
     Executes the model script using subprocess.run with inherited I/O.
     This allows the child script to run its training and then enter its 
@@ -231,99 +245,168 @@ def execute_model_script(script_path: str, data_filepath: str, target_col: str |
         
         print("\n✅ Model script exited successfully after user input.")
         print(f"Model saved to: {pkl_full_path}")
-        
+        return {"status": "ok", "model_path": pkl_full_path}
+
     except subprocess.CalledProcessError as e:
         # This catches errors if the child script crashes during training or prediction.
         print(f"❌ Error during script execution (Return Code {e.returncode})")
         print("Please check the terminal output for the script's internal error messages.")
+        return {"status": "error", "message": f"Return code {e.returncode}"}
     except FileNotFoundError:
         print("❌ Error: Python executable or script not found. Check paths.")
+        return {"status": "error", "message": "Python executable or script not found"}
         
 # --- 6. MAIN ORCHESTRATOR FUNCTION ---
 
-def orchestrate_ml_pipeline():
-    """Orchestrates the entire ML discovery and training pipeline."""
-    
-    # 1. Interactive Input
-    print("="*50)
-    print("✨ ML Model Orchestration Pipeline ✨")
-    print(f"Dataset Filepath: {HARDCODED_DATASET_PATH}")
-    print("="*50)
-    
-    target_column = input(f"Enter the TARGET COLUMN name (or leave blank if unsupervised): ").strip() or None
-    user_context = input("Enter your CONTEXT/GOAL for this dataset (e.g., 'Predict survival'): ").strip()
-    if not user_context:
-        user_context = "Analyze the data and suggest a fitting ML task."
+def orchestrate_pipeline_entry(
+    dataset_path: str,
+    target_column: str | None,
+    user_context: str,
+    run_training: bool,
+    emit_json: bool = False,
+) -> dict | None:
+    """Core orchestration logic that can be called from CLI or imported."""
+    dataset_path = Path(dataset_path).expanduser().resolve()
+    result: dict[str, object] = {
+        "dataset_path": str(dataset_path),
+        "target_column": target_column,
+        "context": user_context,
+        "run_training": run_training,
+        "stats": None,
+        "llm_result": None,
+        "script_path": None,
+        "training": None,
+        "status": "pending",
+    }
 
-    dataset_path = HARDCODED_DATASET_PATH
-    
+    print("=" * 50)
+    print("✨ ML Model Orchestration Pipeline ✨")
+    print(f"Dataset Filepath: {dataset_path}")
+    print("=" * 50)
+
     print("\n--- Starting Data Analysis ---")
-    
     df = read_dataset(dataset_path)
     if df is None:
-        return
+        result["status"] = "error"
+        result["error"] = "Dataset could not be read."
+    else:
+        file_name = dataset_path.name
+        stats_string = generate_stats(df)
+        result["stats"] = stats_string
+        print("The Calculated stats are: ", stats_string)
 
-    file_name = Path(dataset_path).name
-    stats_string = generate_stats(df)
-    print("The Calculated stats are: ", stats_string)
-    
-    llm_result = get_model_suggestion_from_llama3(stats_string, file_name, target_column, user_context)
-    
-    if llm_result is None:
-        print("Pipeline aborted due to LLM error.")
-        return
+        llm_result = get_model_suggestion_from_llama3(
+            stats_string, file_name, target_column, user_context
+        )
+        result["llm_result"] = llm_result
 
-    problem_type = llm_result.get('problem_type')
-    suggested_model = llm_result.get('suggested_model')
-    
-    print("\n" + "="*50)
-    print(f"🤖 LLM Problem Assessment")
-    print("="*50)
-    print(f"  Problem Type: **{problem_type}**")
-    print(f"  Suggested Model: **{suggested_model}**")
-    print(f"  Reasoning: {llm_result.get('reasoning')}")
-    print(f"  Unnecessary Columns: {llm_result.get('unnecesarry_column_in_the_dataset')}")
-    print("="*50 + "\n")
+        if llm_result is None:
+            result["status"] = "llm_failed"
+            result["error"] = "LLM call failed or returned invalid JSON."
+        else:
+            problem_type = llm_result.get("problem_type")
+            suggested_model = llm_result.get("suggested_model")
 
-    # 6. Find the model script (Uses the exact name from LLM)
-    model_script_name = f"{suggested_model}.py"
-    
-    script_path = find_model_script(
-        library_path=ML_LIBRARY_ROOT,
-        problem_type=problem_type,
-        script_filename=model_script_name
+            if not problem_type or not suggested_model:
+                result["status"] = "llm_missing_fields"
+                result["error"] = "LLM response did not contain problem_type or suggested_model."
+            else:
+                print("\n" + "=" * 50)
+                print(f"🤖 LLM Problem Assessment")
+                print("=" * 50)
+                print(f"  Problem Type: **{problem_type}**")
+                print(f"  Suggested Model: **{suggested_model}**")
+                print(f"  Reasoning: {llm_result.get('reasoning')}")
+                print(f"  Unnecessary Columns: {llm_result.get('unnecesarry_column_in_the_dataset')}")
+                print("=" * 50 + "\n")
+
+                model_script_name = f"{suggested_model}.py"
+
+                script_path = find_model_script(
+                    library_path=ML_LIBRARY_ROOT,
+                    problem_type=problem_type,
+                    script_filename=model_script_name,
+                )
+                result["script_path"] = script_path
+
+                if script_path is None:
+                    result["status"] = "model_not_found"
+                    result["error"] = f"Model script {model_script_name} not found for {problem_type}."
+                else:
+                    if run_training:
+                        training_result = execute_model_script(
+                            script_path=script_path,
+                            data_filepath=str(dataset_path),
+                            target_col=target_column,
+                            model_output_dir=TRAINED_MODELS_DIR,
+                        )
+                        result["training"] = training_result
+                        if training_result.get("status") != "ok":
+                            result["status"] = "training_failed"
+
+                    if result["status"] == "pending":
+                        result["status"] = "ok"
+
+    if emit_json:
+        print(json.dumps(result, default=str))
+    else:
+        print("\n✨ ML Orchestration Pipeline Complete. Check the Trained_Models directory! ✨")
+
+    return result
+
+
+def orchestrate_ml_pipeline():
+    """Legacy wrapper kept for backwards compatibility."""
+    return orchestrate_pipeline_entry(
+        dataset_path=str(DEFAULT_DATASET_PATH),
+        target_column=None,
+        user_context="Analyze the data and suggest a fitting ML task.",
+        run_training=False,
+        emit_json=False,
     )
 
-    if script_path:
-        # 7. Train the model
-        execute_model_script(
-            script_path=script_path,
-            data_filepath=dataset_path,
-            target_col=target_column,
-            model_output_dir=TRAINED_MODELS_DIR
-        )
-    
-    print("\n✨ ML Orchestration Pipeline Complete. Check the Trained_Models directory! ✨")
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run ML pipeline suggestion/training for a dataset."
+    )
+    parser.add_argument(
+        "--dataset",
+        "-d",
+        default=str(DEFAULT_DATASET_PATH),
+        help="Path to the dataset file.",
+    )
+    parser.add_argument(
+        "--target",
+        "-t",
+        default=None,
+        help="Target column for supervised tasks. Leave empty for unsupervised.",
+    )
+    parser.add_argument(
+        "--context",
+        "-c",
+        default="Analyze the data and suggest a fitting ML task.",
+        help="Context/goal for the dataset.",
+    )
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Also run the suggested training script (may be interactive).",
+    )
+    parser.add_argument(
+        "--json-output",
+        action="store_true",
+        help="Print the result object as JSON (for API/automation).",
+    )
+    return parser.parse_args()
 
-# --- 7. EXECUTION BLOCK (Final, Corrected) ---
 
 if __name__ == "__main__":
-    # Check 1: Ollama
-    try:
-        import ollama
-    except ImportError:
-        print("FATAL ERROR: The 'ollama' library is not installed.")
-        print("Please install it using: pip install ollama")
-        sys.exit(1)
-        
-    # Check 2: tabulate (Corrected check for 'tabulate' dependency)
-    try:
-        # Check using a minimal, non-empty DataFrame to avoid the "Cannot describe" ValueError
-        pd.DataFrame({'A': [1]}).describe().to_markdown() 
-    except ImportError:
-        print("FATAL ERROR: The 'tabulate' library is missing (required by pandas.to_markdown()).")
-        print("Please install it using: pip install tabulate")
-        sys.exit(1)
-
-    orchestrate_ml_pipeline()
+    args = parse_args()
+    orchestrate_pipeline_entry(
+        dataset_path=args.dataset,
+        target_column=args.target,
+        user_context=args.context,
+        run_training=args.train,
+        emit_json=args.json_output,
+    )
