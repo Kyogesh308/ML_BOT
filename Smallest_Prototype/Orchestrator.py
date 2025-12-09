@@ -731,7 +731,10 @@ def get_target_and_context(df):
     return target_column, context
 
 # FIX: Model and problem type are now returned as a tuple
-filepath = r"ML_BOT\Sample_Datasets\Mall_Customers.csv"
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+filepath = str(REPO_ROOT / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv")
 file_name = extract_filename(filepath)
 df = load_file(filepath)
 target_column, context = get_target_and_context(df)

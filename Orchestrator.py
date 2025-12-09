@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 import string
 
@@ -73,10 +74,13 @@ def get_target_and_context(df):
     print(f"Context: {context if context else 'No context provided.'} \n")
 
     return target_column, context
-filepath = "ML_BOT\Sample_Datasets\Mall_Customers.csv"
-file_name = extract_filename(r"ML_BOT\Sample_Datasets\Mall_Customers.csv")
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATASET = REPO_ROOT / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv"
+
+filepath = str(DEFAULT_DATASET)
+file_name = extract_filename(filepath)
 #loading the file into the dataframe
-df = load_file(r"ML_BOT\Sample_Datasets\Mall_Customers.csv")
+df = load_file(filepath)
 
 target_column, context = get_target_and_context(df)
 
@@ -153,7 +157,7 @@ from joblib import dump, load
 import numpy as np
 import os
 
-data = pd.read_csv('ML_BOT/Sample_Datasets/diabetes.csv')
+data = pd.read_csv(REPO_ROOT / 'ML_BOT' / 'Sample_Datasets' / 'diabetes.csv')
 y = data['Outcome']
 X = data.drop('Outcome', axis=1)
 
@@ -191,5 +195,4 @@ raw_text = generate_script_content(model, prompt_template)
 code = extract_code_block(raw_text)
 save_script(filename, code)
 execute_script(filename, filepath, target_column, f"Trained_{model}.pkl")
-
 

@@ -1,9 +1,15 @@
 import json
 import os
 import io
+from pathlib import Path
+
 import google.generativeai as genai
 import pandas as pd
+from dotenv import dotenv_values
 import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ENV = dotenv_values(REPO_ROOT / ".env")
 
 def model_suggestion(filename, dataset: pd.DataFrame, target, context):
     
@@ -70,7 +76,7 @@ def model_suggestion(filename, dataset: pd.DataFrame, target, context):
     "unncesarry_column_in_the_dataset": "string"
     }}"""
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = ENV.get("GEMINI_API_KEY")
     if not api_key:
         print("Error: GEMINI_API_KEY is not set.")
         sys.exit(1)

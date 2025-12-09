@@ -6,19 +6,27 @@ import sys
 from io import StringIO
 from pathlib import Path
 
+from dotenv import dotenv_values
 import pandas as pd
 
 # --- GLOBAL CONFIGURATION AND SCHEMA ---
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+ENV = dotenv_values(REPO_ROOT / ".env")
+
+
+def get_env(key: str, default=None):
+    return ENV.get(key) if ENV.get(key) not in (None, "") else default
+
+
 ML_LIBRARY_ROOT = Path(
-    os.environ.get("ML_LIBRARY_ROOT", REPO_ROOT / "ML_BOT" / "ML_Library")
+    get_env("ML_LIBRARY_ROOT", REPO_ROOT / "ML_BOT" / "ML_Library")
 ).resolve()
 TRAINED_MODELS_DIR = Path(
-    os.environ.get("TRAINED_MODELS_DIR", REPO_ROOT / "Trained_Models")
+    get_env("TRAINED_MODELS_DIR", REPO_ROOT / "Trained_Models")
 ).resolve()
 DEFAULT_DATASET_PATH = Path(
-    os.environ.get(
+    get_env(
         "DEFAULT_DATASET_PATH",
         REPO_ROOT / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv",
     )
@@ -102,9 +110,9 @@ def get_model_suggestion_from_llama3(
         print("❌ google-generativeai library not found. Please run 'pip install google-generativeai'.")
         return None
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = get_env("GEMINI_API_KEY")
     if not api_key:
-        print("❌ GEMINI_API_KEY is not set. Please add it to your environment.")
+        print("❌ GEMINI_API_KEY is not set in .env.")
         return None
     genai.configure(api_key=api_key)
     

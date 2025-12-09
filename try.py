@@ -28,6 +28,7 @@
 
 
 import os
+from pathlib import Path
 
 def find_model_script(library_path, problem_type, script_filename="model_script.py"):
     problem_dir_path = os.path.join(library_path, problem_type)
@@ -45,5 +46,8 @@ def find_model_script(library_path, problem_type, script_filename="model_script.
     print(f"❌ Could not find '{script_filename}' in any subdirectory of '{problem_type}'.")
     return None
 
-find_model_script(r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\ML_Library","Classification",script_filename="LogisticRegression.py")
 
+if __name__ == "__main__":
+    repo_root = Path(__file__).resolve().parent
+    library = repo_root / "ML_BOT" / "ML_Library"
+    find_model_script(str(library), "Classification", script_filename="LogisticRegression.py")

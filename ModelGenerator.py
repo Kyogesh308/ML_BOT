@@ -1,16 +1,21 @@
 import sys
 import subprocess
 import os
-import google.generativeai as genai
 from subprocess import Popen, PIPE
+from pathlib import Path
+
+import google.generativeai as genai
+from dotenv import dotenv_values
 
 GEMINI_MODEL = "gemini-1.5-flash"
+REPO_ROOT = Path(__file__).resolve().parent
+ENV = dotenv_values(REPO_ROOT / ".env")
 
 def generate_script_content(model: str, prompt_template: str) -> str:
     """
     Calls Gemini to generate a Python script based on the provided model and prompt template.
     """
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = ENV.get("GEMINI_API_KEY")
     if not api_key:
         print("Error: GEMINI_API_KEY is not set.")
         sys.exit(1)
