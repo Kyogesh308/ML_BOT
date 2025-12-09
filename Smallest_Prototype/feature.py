@@ -6,10 +6,18 @@ import sys
 from io import StringIO
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 # --- GLOBAL CONFIGURATION AND SCHEMA ---
 
 # Resolve project-rooted paths (works cross-platform)
 BASE_DIR = Path(__file__).resolve().parent.parent
+ENV = dotenv_values(BASE_DIR / ".env")
+
+def get_env(key: str, default=None):
+    val = ENV.get(key)
+    return val if val not in (None, "") else default
+
 ML_LIBRARY_ROOT = BASE_DIR / "ML_BOT" / "ML_Library"
 TRAINED_MODELS_DIR = BASE_DIR / "Trained_Models"
 SAMPLE_DATASET_PATH = BASE_DIR / "ML_BOT" / "Sample_Datasets" / "Mall_Customers.csv"
@@ -69,17 +77,23 @@ def generate_stats(df: pd.DataFrame) -> str:
     stats_output.write(df.isnull().sum().to_markdown(numalign="left", stralign="left"))
     return stats_output.getvalue()
 
-# --- 3. LLM INTERACTION (Using Ollama) ---
+# --- 3. LLM INTERACTION (Using Gemini) ---
 
 def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str, context: str) -> dict | None: 
     """
-    Calls Llama 3 via Ollama, constraining the 'suggested_model' field to CamelCase names.
+    Calls Gemini via google-generativeai, constraining the 'suggested_model' field to CamelCase names.
     """
     try:
-        import ollama
+        import google.generativeai as genai
     except ImportError:
-        print("❌ Ollama library not found. Please run 'pip install ollama'.")
+        print("❌ google-generativeai library not found. Please run 'pip install google-generativeai'.")
         return None
+
+    api_key = get_env("GEMINI_API_KEY")
+    if not api_key:
+        print("❌ GEMINI_API_KEY is not set in .env.")
+        return None
+    genai.configure(api_key=api_key)
     
     # Generate the model lists for the prompt
     classification_models = ', '.join(MODEL_SCHEMA['Classification'])
@@ -97,7 +111,6 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
     }
     """
     
-    # --- UPDATED PROMPT: Constrains the suggested_model field ---
     prompt = f"""
     You are an expert Machine Learning assistant. Analyze the following dataset information and provide an assessment.
 
@@ -120,30 +133,18 @@ def get_model_suggestion_from_llama3(stats: str, filename: str, target_col: str,
     JSON SCHEMA:
     {json_schema}
     """
-    # --- END OF UPDATED PROMPT ---
     
-    print("\n--- 🤖 Sending Analysis to Llama 3 via Ollama... ---")
+    print("\n--- 🤖 Sending Analysis to Gemini... ---")
     
     try:
-        response = ollama.generate(
-            model='llama3', 
-            prompt=prompt,
-            format="json",
-            options={'temperature': 0.0}
-        )
-        
-        json_str = response['response']
-        print(f"✅ Ollama response received.")
-        
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        json_str = response.text
+        print(f"✅ Gemini response received.")
         return json.loads(json_str)
-
-    except ollama.OllamaAPIError as e:
-        print("❌ Ollama API Error: Ensure 'llama3' is pulled (ollama pull llama3) and the server is running.")
-        print(e)
-        return None
     except json.JSONDecodeError:
-        print(f"❌ JSON Decode Error: Llama 3 did not return valid JSON. Check the raw output for errors.")
-        print(f"Raw response (first 200 chars): {json_str[:200]}...")
+        snippet = json_str[:200] if 'json_str' in locals() else ''
+        print(f"❌ JSON Decode Error: Gemini did not return valid JSON. Start of response: {snippet}")
         return None
     except Exception as e:
         print(f"❌ An unexpected error occurred during LLM call: {e}")
@@ -360,12 +361,12 @@ def _run_cli():
 # --- 7. EXECUTION BLOCK (Final, Corrected) ---
 
 if __name__ == "__main__":
-    # Check 1: Ollama
+    # Check 1: google-generativeai
     try:
-        import ollama
+        import google.generativeai  # noqa: F401
     except ImportError:
-        print("FATAL ERROR: The 'ollama' library is not installed.")
-        print("Please install it using: pip install ollama")
+        print("FATAL ERROR: The 'google-generativeai' library is not installed.")
+        print("Please install it using: pip install google-generativeai")
         sys.exit(1)
         
     # Check 2: tabulate (Corrected check for 'tabulate' dependency)
