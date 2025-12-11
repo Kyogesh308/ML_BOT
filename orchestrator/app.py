@@ -3,7 +3,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from Smallest_Prototype.feature import (
+from orchestrator.feature import (
     SAMPLE_DATASET_PATH,
     orchestrate_ml_pipeline,
 )

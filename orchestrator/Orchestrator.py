@@ -5,8 +5,8 @@ import sys
 import numpy as np
 
 # FIX: Import the model_suggestion function to return problem_type_llm
-from ModelSuggestion import model_suggestion
-from ModelGenerator import generate_script_content, extract_code_block, save_script, execute_script
+from ML_BOT.PlayGround.ModelSuggestion import model_suggestion
+from ML_BOT.PlayGround.ModelGenerator import generate_script_content, extract_code_block, save_script, execute_script
 from io import StringIO
 
 # --- MASTER TEMPLATE STORAGE ---

@@ -2,8 +2,8 @@ import os
 import pandas as pd
 import string
 
-from ModelSuggestion import model_suggestion
-from ModelGenerator import *
+from ML_BOT.PlayGround.ModelSuggestion import model_suggestion
+from ML_BOT.PlayGround.ModelGenerator import *
 from io import StringIO
 def extract_filename(filepath):
     
