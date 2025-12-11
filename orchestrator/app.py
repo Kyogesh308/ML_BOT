@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import joblib
+import pandas as pd
 import streamlit as st
 
 from feature import (
@@ -179,13 +181,7 @@ with st.container():
         user_context = st.text_area(
             "Context / goal", placeholder="e.g., Predict customer churn"
         )
-        opt1, opt2 = st.columns(2)
-        with opt1:
-            run_training = st.checkbox("Train model after suggestion", value=False)
-        with opt2:
-            auto_exit = st.checkbox(
-                "Auto-exit prediction loop", value=True, help="Send 'exit' after training."
-            )
+        run_training = st.checkbox("Train model after suggestion", value=False)
 
 st.divider()
 run_btn = st.button("Run pipeline", type="primary", use_container_width=True)
@@ -199,12 +195,155 @@ def _persist_upload(file) -> Path:
     return dest
 
 
+def _load_model_bundle(pkl_path: str) -> dict:
+    """Load a trained model bundle and normalize structure."""
+    bundle = joblib.load(pkl_path)
+    if not isinstance(bundle, (tuple, list)) or len(bundle) < 3:
+        raise ValueError("Model bundle is not in the expected format.")
+    model = bundle[0]
+    scaler = bundle[1] if len(bundle) > 1 else None
+    feature_columns = bundle[2] if len(bundle) > 2 else []
+    feature_encoders = bundle[3] if len(bundle) > 3 else {}
+    target_encoder = bundle[4] if len(bundle) > 4 else None
+    return {
+        "model": model,
+        "scaler": scaler,
+        "feature_columns": feature_columns or [],
+        "feature_encoders": feature_encoders or {},
+        "target_encoder": target_encoder,
+    }
+
+
+def _predict_single(bundle: dict, values: dict[str, str]) -> str:
+    """Run a single prediction given raw string inputs."""
+    feature_columns = bundle.get("feature_columns", [])
+    encoders = bundle.get("feature_encoders", {})
+    scaler = bundle.get("scaler")
+    model = bundle.get("model")
+    target_encoder = bundle.get("target_encoder")
+
+    ordered_vals = []
+    for col in feature_columns:
+        raw = values.get(col, "")
+        if col in encoders:
+            le = encoders[col]
+            try:
+                ordered_vals.append(le.transform([raw])[0])
+            except Exception as exc:
+                raise ValueError(f"Value '{raw}' is not valid for '{col}'.") from exc
+        else:
+            try:
+                ordered_vals.append(float(raw))
+            except ValueError as exc:
+                raise ValueError(f"Column '{col}' expects a number.") from exc
+
+    df = pd.DataFrame([ordered_vals], columns=feature_columns)
+    X = scaler.transform(df) if scaler is not None else df
+    pred = model.predict(X)[0]
+    if target_encoder is not None:
+        try:
+            pred = target_encoder.inverse_transform([pred])[0]
+        except Exception:
+            pass
+    return str(pred)
+
+
+def _render_results(result: dict) -> None:
+    suggestion = result.get("suggestion", {}) or {}
+    st.markdown("### Results")
+
+    st.markdown('<div class="mlb-card">', unsafe_allow_html=True)
+    st.markdown("#### Suggested model")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(f"**Problem Type:** {suggestion.get('problem_type') or 'Not detected'}")
+        st.markdown(f"**Suggested Model:** {suggestion.get('suggested_model') or 'N/A'}")
+    with col_b:
+        st.markdown(f"**Unnecessary Column:** {suggestion.get('unnecesarry_column_in_the_dataset') or 'None flagged'}")
+    st.markdown("**Reasoning**")
+    st.markdown(suggestion.get("reasoning") or "No reasoning provided.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="mlb-card" style="margin-top:12px;">', unsafe_allow_html=True)
+    st.markdown("#### Script location")
+    st.write(result.get("script_path") or "Not found in ML library.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    with st.expander("Dataset stats (from pandas describe/info)"):
+        st.text(result.get("stats", "No stats available."))
+
+    train_result = result.get("train_result")
+    if train_result:
+        st.markdown('<div class="mlb-card" style="margin-top:12px;">', unsafe_allow_html=True)
+        st.markdown("#### Training output")
+        st.write(f"Model file: {train_result.get('pkl_path')}")
+        pkl_path = train_result.get("pkl_path")
+        if pkl_path and Path(pkl_path).exists():
+            with open(pkl_path, "rb") as f:
+                st.download_button(
+                    label="Download trained model (.pkl)",
+                    data=f.read(),
+                    file_name=Path(pkl_path).name,
+                    mime="application/octet-stream",
+                )
+        else:
+            st.info("Model file not found on disk; re-run training to regenerate.")
+        with st.expander("stdout"):
+            st.text(train_result.get("stdout") or "")
+        with st.expander("stderr"):
+            st.text(train_result.get("stderr") or "")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Inline prediction UI using the trained model bundle.
+        if pkl_path and Path(pkl_path).exists():
+            st.markdown('<div class="mlb-card" style="margin-top:12px;">', unsafe_allow_html=True)
+            st.markdown("#### Try a prediction")
+            bundle = None
+            bundle_key = f"bundle::{pkl_path}"
+            if st.session_state.get(bundle_key):
+                bundle = st.session_state[bundle_key]
+            else:
+                try:
+                    bundle = _load_model_bundle(pkl_path)
+                    st.session_state[bundle_key] = bundle
+                except Exception as exc:
+                    st.error(f"Could not load model for prediction: {exc}")
+
+            if bundle:
+                feature_columns = bundle.get("feature_columns", [])
+                encoders = bundle.get("feature_encoders", {})
+
+                if not feature_columns:
+                    st.info("Feature metadata not available in model bundle; prediction UI disabled.")
+                else:
+                    with st.form("predict_form"):
+                        user_inputs: dict[str, str] = {}
+                        for col in feature_columns:
+                            if col in encoders:
+                                choices = list(getattr(encoders[col], "classes_", []))
+                                user_inputs[col] = st.selectbox(
+                                    col,
+                                    options=choices or ["-"],
+                                    help="Select a known category.",
+                                )
+                            else:
+                                user_inputs[col] = st.text_input(col, placeholder="Numeric value")
+                        submit_pred = st.form_submit_button("Predict")
+
+                    if submit_pred:
+                        try:
+                            prediction = _predict_single(bundle, user_inputs)
+                            st.success(f"Predicted value: {prediction}")
+                        except Exception as exc:
+                            st.error(f"Prediction failed: {exc}")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
 if run_btn:
     dataset_path: Path | None = None
 
-    if run_training and not auto_exit:
-        st.warning("Interactive prediction loops are terminal-only. Auto-exit has been enabled for this run.")
-        auto_exit = True
+    auto_exit = True  # Always auto-exit CLI prediction loops; UI handles prediction
     if uploaded_file:
         dataset_path = _persist_upload(uploaded_file)
     elif use_sample:
@@ -225,49 +364,11 @@ if run_btn:
             except Exception as e:
                 st.error(f"Pipeline failed: {e}")
             else:
+                st.session_state["last_result"] = result
                 st.success("Pipeline completed.")
 
-                suggestion = result.get("suggestion", {}) or {}
-                st.markdown("### Results")
+                _render_results(result)
 
-                st.markdown('<div class="mlb-card">', unsafe_allow_html=True)
-                st.markdown("#### Suggested model")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown(f"**Problem Type:** {suggestion.get('problem_type') or 'Not detected'}")
-                    st.markdown(f"**Suggested Model:** {suggestion.get('suggested_model') or 'N/A'}")
-                with col_b:
-                    st.markdown(f"**Unnecessary Column:** {suggestion.get('unnecesarry_column_in_the_dataset') or 'None flagged'}")
-                st.markdown("**Reasoning**")
-                st.markdown(suggestion.get("reasoning") or "No reasoning provided.")
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                st.markdown('<div class="mlb-card" style="margin-top:12px;">', unsafe_allow_html=True)
-                st.markdown("#### Script location")
-                st.write(result.get("script_path") or "Not found in ML library.")
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                with st.expander("Dataset stats (from pandas describe/info)"):
-                    st.text(result.get("stats", "No stats available."))
-
-                train_result = result.get("train_result")
-                if train_result:
-                    st.markdown('<div class="mlb-card" style="margin-top:12px;">', unsafe_allow_html=True)
-                    st.markdown("#### Training output")
-                    st.write(f"Model file: {train_result.get('pkl_path')}")
-                    pkl_path = train_result.get("pkl_path")
-                    if pkl_path and Path(pkl_path).exists():
-                        with open(pkl_path, "rb") as f:
-                            st.download_button(
-                                label="Download trained model (.pkl)",
-                                data=f.read(),
-                                file_name=Path(pkl_path).name,
-                                mime="application/octet-stream",
-                            )
-                    else:
-                        st.info("Model file not found on disk; re-run training to regenerate.")
-                    with st.expander("stdout"):
-                        st.text(train_result.get("stdout") or "")
-                    with st.expander("stderr"):
-                        st.text(train_result.get("stderr") or "")
-                    st.markdown("</div>", unsafe_allow_html=True)
+# Re-render last successful run so prediction UI remains after rerun
+if not run_btn and st.session_state.get("last_result"):
+    _render_results(st.session_state["last_result"])
