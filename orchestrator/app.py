@@ -96,6 +96,17 @@ if run_btn:
                 if train_result:
                     st.subheader("Training Output")
                     st.write(f"Model file: {train_result.get('pkl_path')}")
+                    pkl_path = train_result.get("pkl_path")
+                    if pkl_path and Path(pkl_path).exists():
+                        with open(pkl_path, "rb") as f:
+                            st.download_button(
+                                label="Download trained model (.pkl)",
+                                data=f.read(),
+                                file_name=Path(pkl_path).name,
+                                mime="application/octet-stream",
+                            )
+                    else:
+                        st.info("Model file not found on disk; re-run training to regenerate.")
                     with st.expander("stdout"):
                         st.text(train_result.get("stdout") or "")
                     with st.expander("stderr"):
