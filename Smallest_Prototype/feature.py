@@ -5,13 +5,14 @@ import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
-
+import shutil
+from generate_package import create_user_package
 # --- GLOBAL CONFIGURATION AND SCHEMA ---
 
 # Your specific paths
 ML_LIBRARY_ROOT = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\ML_Library"
 TRAINED_MODELS_DIR = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\Trained_Models"
-HARDCODED_DATASET_PATH = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\Sample_Datasets\Mall_Customers.csv" 
+HARDCODED_DATASET_PATH = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\Sample_Datasets\height-weight.csv" 
 
 # Model Schema: Mapping problem types to EXACT CamelCase script names
 MODEL_SCHEMA = {
@@ -238,6 +239,7 @@ def execute_model_script(script_path: str, data_filepath: str, target_col: str |
         print("Please check the terminal output for the script's internal error messages.")
     except FileNotFoundError:
         print("❌ Error: Python executable or script not found. Check paths.")
+    return pkl_full_path
         
 # --- 6. MAIN ORCHESTRATOR FUNCTION ---
 
@@ -296,13 +298,29 @@ def orchestrate_ml_pipeline():
 
     if script_path:
         # 7. Train the model
-        execute_model_script(
+        pklpath = execute_model_script(
             script_path=script_path,
             data_filepath=dataset_path,
             target_col=target_column,
             model_output_dir=TRAINED_MODELS_DIR
         )
     
+    answer = input("Do You want an app to download the trained model? (yes or no): ")
+    if 'y' in answer.lower():
+        appName = 'ML_App'
+        appName = input("Enter the name for your App of your own choice: ")
+        if 'Run_App' not in appName:
+            print(f"Your App named '{appName}' is being build...")
+        else:
+            print(f"Your App with name 'ML_App' is being build...")
+        create_user_package(appName, pklpath, problem_type)
+    
+    for item in os.listdir("Trained_Models"):
+        path = os.path.join("Trained_Models", item)
+        shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+    print("\n All the trained models are deleted!!")
+
+        
     print("\n✨ ML Orchestration Pipeline Complete. Check the Trained_Models directory! ✨")
 
 
