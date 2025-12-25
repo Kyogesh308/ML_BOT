@@ -1,6 +1,7 @@
 import os
 import json
 import pandas as pd
+from typing import Optional
 import subprocess
 import sys
 from io import StringIO
@@ -39,10 +40,29 @@ MODEL_SCHEMA = {
 def read_dataset(filepath: str) -> pd.DataFrame | None: 
     """Reads the dataset based on file extension (csv, xlsx, json, txt, tsv)."""
     try:
+        #if filepath.startswith("sql://"):
+        #    if sql_conn is None:
+        #        raise ValueError("sql_conn is required for sql:// URLs")
+        #query = filepath[len("sql://") :]
+        #df = pd.read_sql_query(query, sql_conn)
+
+        #if sql_table is not None and sql_conn is not None:
+        #    df = pd.read_sql_table(sql_table, sql_conn)
         file_extension = Path(filepath).suffix.lower()
         if file_extension == '.csv': df = pd.read_csv(filepath)
-        elif file_extension in ('.xlsx', '.xls'): df = pd.read_excel(filepath)
+        elif file_extension in ('.xlsx', '.xls', '.xlsm', '.xlsb', '.ods' ): df = pd.read_excel(filepath)
         elif file_extension == '.json': df = pd.read_json(filepath)
+        elif file_extension == ('.h5', '.hdf', '.hdf5'): df = pd.read_hdf(filepath)
+        elif file_extension == ('.feather', '.ft'): df = pd.read_feather(filepath)
+        elif file_extension == ('.pkl', '.pickle'): df = pd.read_pickle(filepath)
+        elif file_extension == ('.dta'): df = pd.read_stata(filepath)
+        elif file_extension == ('.sas7bdat', '.xpt'): df = pd.read_sas(filepath)
+        elif file_extension == ('.sav'): df = pd.read_spss(filepath)
+        elif file_extension == ('.html', '.htm'): 
+            tables = pd.read_html(filepath)
+            if not tables:
+                raise ValueError(f"No tables found in HTML file: {filepath}")
+            return tables[0] 
         elif file_extension == '.txt' or file_extension == '.tsv':
             # Assuming space or tab-separated for txt/tsv
             df = pd.read_csv(filepath, sep=r'\s+|,', engine='python')
