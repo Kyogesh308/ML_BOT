@@ -13,7 +13,7 @@ from generate_package import create_user_package
 # Your specific paths
 ML_LIBRARY_ROOT = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\ML_Library"
 TRAINED_MODELS_DIR = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\Trained_Models"
-HARDCODED_DATASET_PATH = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\Sample_Datasets\height-weight.csv" 
+HARDCODED_DATASET_PATH = r"C:\Users\konda\OneDrive\Desktop\projects\ML_BOT\ML_BOT\Sample_Datasets\diabetes.csv" 
 
 # Model Schema: Mapping problem types to EXACT CamelCase script names
 MODEL_SCHEMA = {
